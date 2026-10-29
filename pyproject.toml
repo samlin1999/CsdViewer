@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csdview"
+version = "1.0.0"
+description = "Cocos Studio .csd 檢視、渲染與畫面比對工具"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "Pillow>=10.0",
+    "numpy>=1.24",
+]
+
+[project.scripts]
+csdview = "csdview.cli:main"
+
+[tool.setuptools]
+packages = ["csdview"]
+
+[tool.setuptools.package-data]
+csdview = ["web/*.html"]

@@ -1,0 +1,122 @@
+Metadata-Version: 2.4
+Name: csdview
+Version: 1.0.0
+Summary: Cocos Studio .csd 檢視、渲染與畫面比對工具
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: Pillow>=10.0
+Requires-Dist: numpy>=1.24
+
+# csdview
+
+讀取 Cocos Studio 的 `.csd` 檔案，在 Python 端把畫面渲染出來，可以拖曳時間軸看每一格，
+也可以由 AI agent 透過指令列呼叫——特別是拿來驗證「移植到 Cocos Creator 後畫面對不對」。
+
+人在網頁上看到的畫面，跟 agent 用 CLI 取得的 PNG，是同一份渲染程式碼算出來的，
+所以兩邊不會有落差。
+
+## 安裝
+
+```bash
+pip install -r requirements.txt      # Pillow + numpy
+```
+
+不需要 Cocos Studio、Cocos2d-x 或任何引擎執行檔。
+
+## 網頁介面（給人看）
+
+雙擊 **`開啟介面.bat`** 就會啟動。第一次執行會請你指定專案的 `cocosstudio` 資料夾
+（可以直接把資料夾拖曳到視窗上），之後雙擊就會沿用上次的選擇。
+也可以把資料夾直接拖到 `開啟介面.bat` 的圖示上開啟指定專案。
+
+首次執行若缺少 Pillow／numpy，批次檔會自動安裝。
+
+指令列的等效寫法：
+
+```bash
+python csdview.py serve <cocosstudio 資料夾>
+```
+
+瀏覽器會自動開啟 <http://127.0.0.1:8770/>：
+
+- 左側：`.csd` 檔案列表，可篩選
+- 中間：渲染畫面，可切換背景（格子／透明／純色）與縮放
+- 下方：動畫下拉選單、播放鍵、時間軸滑桿、逐格輸入框
+- 右側：節點階層，滑鼠停留可看座標、資源路徑、引用的 `.csd`
+
+快捷鍵：<kbd>空白鍵</kbd> 播放／暫停、<kbd>←</kbd><kbd>→</kbd> 逐格（按住 Shift 跳 10 格）、
+<kbd>Home</kbd>／<kbd>End</kbd> 跳到頭尾。
+
+整段動畫的影格會在背景預先抓好，所以拖曳時間軸是即時的。
+
+## 指令列（給 AI agent）
+
+每個子指令都支援 `--json`，輸出結構穩定、可直接解析。圖片一律寫成檔案並在 JSON 裡回報路徑。
+
+| 指令 | 用途 |
+| --- | --- |
+| `info` | 檔案結構、動畫清單與長度、節點統計、引用的 `.csd` |
+| `render` | 渲染單一影格成 PNG |
+| `sheet` | 把一段動畫平鋪成一張總覽圖，一眼看完整段動作 |
+| `frames` | 批次輸出每一格 PNG |
+| `gif` | 輸出動畫 GIF |
+| `tree` | 節點階層與每個節點在畫面上的位置 |
+| `find` | 依名稱／類型搜尋節點並回報畫面座標 |
+| `spec` | 匯出節點規格 JSON，供移植後做結構化比對 |
+| `compare` | 與參考圖（Cocos Creator 截圖）比對差異 |
+| `doctor` | 檢查缺少的資源 |
+| `list` | 列出資料夾底下所有 `.csd` |
+
+詳細用法與比對流程見 [AGENT_GUIDE.md](AGENT_GUIDE.md)。
+
+想讓某個專案裡的 agent 自動知道這個工具，把 [dropin/CLAUDE.md](dropin/CLAUDE.md)
+複製到該專案根目錄即可，見 [dropin/README.md](dropin/README.md)。
+
+```bash
+python csdview.py info Deal.csd
+python csdview.py render Deal.csd --anim deal --frame 30 -o out/deal30.png
+python csdview.py render Deal.csd --annotate --json        # 圖 + 每個節點的畫面座標
+python csdview.py sheet Deal.csd --anim deal --count 12
+python csdview.py compare Deal.csd creator_screenshot.png --anim deal --frame 30
+```
+
+## 當作 Python 函式庫
+
+```python
+from csdview import render_file
+
+doc, result = render_file("Deal.csd", frame=30, animation="deal")
+result.image.save("frame30.png")
+
+for node in result.nodes:
+    print(node.path, node.rect, node.source)
+```
+
+## 支援的內容
+
+| 項目 | 狀態 |
+| --- | --- |
+| 檔案格式 | Cocos Studio 2.x（`<GameProjectFile>`）與 3.x（`<GameFile>`） |
+| 節點 | Sprite、ImageView、Panel、Button、CheckBox、Text、TextBMFont、Node、Layer、ProjectNode、ScrollView／ListView／PageView、LoadingBar、Slider |
+| 變換 | 位移、旋轉、skew（RotationSkewX/Y 分開）、縮放、錨點、翻轉 |
+| 外觀 | 透明度與顏色的階層累乘、加法混色、九宮格、`ClipAble` 裁切、Panel 底色 |
+| 動畫 | Position／Scale／RotationSkew／Alpha／CColor／VisibleForFrame／FileData 換圖／BlendFunc／AnchorPoint／FrameEvent／巢狀動畫 ActionValue |
+| 緩動 | cocos2d-x 全部 31 種 tweenfunc，以及 `<Points>` 自訂貝茲曲線 |
+| 資源 | 鬆散 PNG、`.plist` 圖集（含旋轉與裁邊還原）、AngelCode `.fnt` 點陣字、TTF／系統字型（含中文） |
+| 巢狀 | `ProjectNodeObjectData` 遞迴載入，含循環偵測與 `InnerActionFrame` 的 Loop／NoLoop／SingleFrame |
+
+粒子系統只畫出洋紅色標示框標出位置與範圍，不做實際模擬（可用 `--no-particles` 關掉）。
+
+## 已知限制
+
+- 文字用系統字型渲染，字寬會跟 Cocos Studio 量到的設計值有些微差異。溢出邏輯框的部分照樣完整畫出來，不會被裁掉，但字距不會與引擎逐像素相同。
+- `Type="Default"` 的資源是 Cocos Studio 內建佔位圖，這裡用灰色方塊代替，不算缺資源。
+- ScrollView／ListView 只畫出內容並依 `ClipAble` 裁切，不模擬捲動位置與自動排版。
+- 粒子系統不做模擬。
+
+## 資源根目錄怎麼找
+
+`.csd` 裡的 `FileData.Path` 是相對於專案的 `cocosstudio` 資料夾。工具會從 `.csd` 往上找：
+名為 `cocosstudio` 的祖先資料夾 → 含 `.ccs` 專案檔的資料夾 → 檔案自身目錄。
+找不到時可以用 `--root` 指定，或用 `--extra-root` 追加搜尋目錄（可重複）。
+路徑對不上時還會退而用檔名在整個專案裡搜尋，所以搬過資料夾的專案通常也能正常顯示。

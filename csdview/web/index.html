@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>csdview — Cocos Studio .csd 檢視器</title>
+<style>
+  :root {
+    --bg: #16171b; --panel: #1e2026; --panel-2: #24262e; --line: #33363f;
+    --text: #e6e8ee; --muted: #9aa0ad; --accent: #4ea1ff; --accent-dim: #2b6fb8;
+    --warn: #ffb454;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; grid-template-columns: 260px 1fr 300px; grid-template-rows: 1fr auto;
+    font: 13px/1.5 "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); overflow: hidden;
+  }
+
+  .panel { background: var(--panel); border-right: 1px solid var(--line);
+           display: flex; flex-direction: column; min-height: 0; }
+  .panel.right { border-right: none; border-left: 1px solid var(--line); }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+              color: var(--muted); margin: 0; padding: 10px 12px 6px; font-weight: 600; }
+
+  /* 檔案列表 */
+  #search { margin: 4px 10px 8px; padding: 6px 8px; border-radius: 5px;
+            border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+  #files { flex: 1; overflow-y: auto; padding: 0 6px 10px; }
+  .group { color: var(--muted); font-size: 11px; padding: 8px 6px 2px;
+           position: sticky; top: 0; background: var(--panel); }
+  .file { padding: 4px 8px; border-radius: 4px; cursor: pointer;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file:hover { background: var(--panel-2); }
+  .file.active { background: var(--accent-dim); color: #fff; }
+
+  /* 舞台 */
+  #stage { position: relative; overflow: auto; display: grid;
+           place-items: center; place-items: safe center;
+           background: #101115; min-height: 0; }
+  #stage img { image-rendering: auto; box-shadow: 0 0 0 1px #000a, 0 12px 40px #0008;
+               transform-origin: center; }
+  #empty { color: var(--muted); text-align: center; }
+  #badge { position: absolute; top: 10px; left: 12px; background: #000a; color: var(--muted);
+           padding: 4px 9px; border-radius: 5px; font-size: 11px; pointer-events: none; }
+  #spinner { position: absolute; top: 10px; right: 12px; width: 14px; height: 14px;
+             border: 2px solid var(--accent); border-right-color: transparent;
+             border-radius: 50%; animation: spin .7s linear infinite; display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 節點樹 */
+  #tree { flex: 1; overflow: auto; padding: 4px 8px 12px; font-size: 12px; }
+  .node { padding: 2px 4px; border-radius: 3px; cursor: default; white-space: nowrap; }
+  .node:hover { background: var(--panel-2); }
+  .node .kind { color: var(--muted); font-size: 11px; }
+  .node .dim { color: #6d7280; }
+  .node.hidden > .label { opacity: .42; text-decoration: line-through; }
+  .toggle { display: inline-block; width: 12px; color: var(--muted); cursor: pointer;
+            user-select: none; }
+  .eye { display: inline-block; width: 15px; text-align: center; cursor: pointer;
+         color: #5c6270; user-select: none; font-size: 11px; }
+  .eye:hover { color: var(--accent); }
+  .eye.on  { color: #6ee7a0; }       /* 被強制顯示 */
+  .eye.off { color: #ff7b7b; }       /* 被強制隱藏 */
+  .kids.collapsed { display: none; }
+
+  /* 底部控制列 */
+  #controls { grid-column: 1 / -1; background: var(--panel); border-top: 1px solid var(--line);
+              padding: 9px 14px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  button, select, input[type=number] {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 10px; font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+  label.check { display: inline-flex; align-items: center; gap: 5px;
+                color: var(--muted); cursor: pointer; user-select: none; }
+  input[type=number] { width: 74px; }
+  #timeline { flex: 1; min-width: 200px; accent-color: var(--accent); height: 22px; }
+  .stat { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .warn { color: var(--warn); }
+  kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-width: 2px;
+        border-radius: 4px; padding: 0 5px; font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="panel">
+  <h2>檔案</h2>
+  <input id="search" placeholder="篩選檔名…" autocomplete="off">
+  <div id="files"></div>
+</div>
+
+<div id="stage">
+  <div id="empty">從左側選一個 .csd 檔案</div>
+  <img id="view" hidden alt="">
+  <div id="badge" hidden></div>
+  <div id="spinner"></div>
+</div>
+
+<div class="panel right">
+  <h2>節點階層</h2>
+  <div id="tree"></div>
+</div>
+
+<div id="controls">
+  <div class="row">
+    <button id="play" class="primary" disabled>▶ 播放</button>
+    <select id="anim" disabled></select>
+    <input type="range" id="timeline" min="0" max="0" value="0" step="1" disabled>
+    <input type="number" id="frameNum" value="0" min="0" step="1" disabled>
+    <span class="stat" id="frameInfo">—</span>
+  </div>
+  <div class="row">
+    <label class="check"><input type="checkbox" id="annotate"> 標註節點</label>
+    <label class="check"><input type="checkbox" id="particles" checked> 粒子標示</label>
+    <label class="check" title="設計畫布外的內容也畫出來，原設計區以虛線標示">
+      <input type="checkbox" id="fullbounds" checked> 畫布外內容</label>
+    <label class="check"><input type="checkbox" id="loop" checked> 循環</label>
+    <button id="visReset" disabled title="清除所有節點可視覆寫">重設可視</button>
+    <label class="check" title="檔案被改動時自動重畫（例如 AI agent 正在編輯）">
+      <input type="checkbox" id="autoReload" checked> 自動更新</label>
+    <button id="reloadNow" title="連貼圖與字型也一起重抓">重新整理</button>
+    <span class="stat" id="reloadFlash" hidden></span>
+    <label class="check">背景
+      <select id="bg">
+        <option value="checker">格子</option>
+        <option value="none">透明</option>
+        <option value="#000000">黑</option>
+        <option value="#ffffff">白</option>
+        <option value="#ff00ff">洋紅</option>
+      </select>
+    </label>
+    <label class="check">縮放
+      <select id="zoom">
+        <option value="0.5">50%</option>
+        <option value="0.75">75%</option>
+        <option value="1" selected>100%</option>
+        <option value="1.5">150%</option>
+        <option value="2">200%</option>
+      </select>
+    </label>
+    <label class="check">速度
+      <select id="speed">
+        <option value="0.25">0.25x</option>
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="2">2x</option>
+      </select>
+    </label>
+    <span class="stat" id="status"></span>
+    <span class="stat" style="margin-left:auto">
+      <kbd>空白鍵</kbd> 播放 · <kbd>←</kbd><kbd>→</kbd> 逐格 · <kbd>Home</kbd>/<kbd>End</kbd> 頭尾
+    </span>
+  </div>
+</div>
+
+<script>
+const FPS = 60;
+const el = (id) => document.getElementById(id);
+const state = {
+  file: null, info: null, anim: "", start: 0, end: 0, frame: 0,
+  playing: false, cache: new Map(), reqId: 0, treeTimer: null, prefetch: null,
+  // 節點路徑 -> true 強制顯示 / false 強制隱藏；沒有紀錄就照 .csd
+  vis: new Map(),
+  watchTimer: null, watchEvery: 0, nonce: 0,
+  // 偵測到改動、但還在等檔案寫完的指紋
+  pendingStamp: null, pendingSince: 0,
+};
+
+function visParams() {
+  const hide = [], show = [];
+  for (const [path, on] of state.vis) (on ? show : hide).push(path);
+  return { hide: hide.join("|"), show: show.join("|") };
+}
+
+// ---------------------------------------------------------------- 檔案列表
+async function loadFiles(fresh) {
+  const q = fresh ? "?fresh=1" : "";
+  const data = await fetch("/api/files" + q).then(r => r.json());
+  const byDir = new Map();
+  for (const f of data.files) {
+    if (!byDir.has(f.dir)) byDir.set(f.dir, []);
+    byDir.get(f.dir).push(f);
+  }
+  const box = el("files");
+  box.innerHTML = "";
+  for (const [dir, items] of byDir) {
+    const head = document.createElement("div");
+    head.className = "group";
+    head.textContent = dir === "." ? "(根目錄)" : dir;
+    box.appendChild(head);
+    for (const f of items) {
+      const row = document.createElement("div");
+      row.className = "file";
+      row.textContent = f.name;
+      row.title = f.path;
+      row.dataset.path = f.path;
+      if (state.file && f.path === state.file) row.className += " active";
+      row.onclick = () => selectFile(f.path, row);
+      box.appendChild(row);
+    }
+  }
+  const needle = (el("search").value || "").toLowerCase();
+  if (needle) {
+    for (const row of document.querySelectorAll("#files .file")) {
+      row.style.display = row.dataset.path.toLowerCase().includes(needle) ? "" : "none";
+    }
+  }
+  el("status").textContent = `${data.files.length} 個檔案`;
+}
+
+el("search").oninput = (e) => {
+  const needle = e.target.value.toLowerCase();
+  for (const row of document.querySelectorAll("#files .file")) {
+    row.style.display = row.dataset.path.toLowerCase().includes(needle) ? "" : "none";
+  }
+};
+
+// ---------------------------------------------------------------- 選檔
+async function selectFile(path, row) {
+  stopPlay();
+  state.cache.clear();
+  if (state.prefetch) state.prefetch.cancelled = true;
+  let ok = false;
+  document.querySelectorAll("#files .file.active").forEach(n => n.classList.remove("active"));
+  if (row) row.classList.add("active");
+
+  state.file = path;
+  state.vis.clear();
+  el("visReset").disabled = true;
+  el("visReset").textContent = "重設可視";
+  const info = await fetch("/api/info?file=" + encodeURIComponent(path)).then(r => r.json());
+  if (info.error) { el("status").innerHTML = `<span class="warn">${info.error}</span>`; return; }
+  state.info = info;
+
+  const select = el("anim");
+  select.innerHTML = "";
+  const full = document.createElement("option");
+  full.value = ""; full.textContent = `整條時間軸 (0~${info.duration})`;
+  select.appendChild(full);
+  for (const a of info.animations) {
+    const opt = document.createElement("option");
+    opt.value = a.name;
+    opt.textContent = `${a.name} (${a.start}~${a.end})`;
+    select.appendChild(opt);
+  }
+  select.value = info.defaultAnimation && info.animations.some(a => a.name === info.defaultAnimation)
+    ? info.defaultAnimation : "";
+  select.disabled = false;
+
+  applyAnim();
+  startWatching();
+  el("status").textContent =
+    `${info.name} · ${info.size[0] || "auto"}×${info.size[1] || "auto"} · ${info.nodeCount} 節點`;
+}
+
+function applyAnim() {
+  const info = state.info;
+  state.anim = el("anim").value;
+  const clip = info.animations.find(a => a.name === state.anim);
+  state.start = clip ? clip.start : 0;
+  state.end = clip ? clip.end : info.duration;
+
+  const bar = el("timeline");
+  bar.min = state.start; bar.max = Math.max(state.start, state.end);
+  bar.value = state.start; bar.disabled = false;
+  el("frameNum").min = state.start; el("frameNum").max = state.end;
+  el("play").disabled = state.end <= state.start;
+  el("frameNum").disabled = false;
+
+  setFrame(state.start);
+  prefetch();
+}
+
+// ---------------------------------------------------------------- 影格
+function frameURL(frame) {
+  const q = new URLSearchParams({
+    file: state.file, frame: String(frame), anim: state.anim,
+    // 版本參數同時含 .csd 的 mtime 與伺服器開機序號：
+    // 前者處理「檔案被改動」，後者處理「渲染程式或素材換了」——
+    // 只靠 mtime 的話，修好程式後瀏覽器會繼續用舊圖。
+    v: String(state.info ? `${state.info.mtime}-${state.info.boot}-${state.nonce}` : 0),
+    bg: el("bg").value, annotate: el("annotate").checked ? "1" : "0",
+    particles: el("particles").checked ? "1" : "0",
+    full: el("fullbounds").checked ? "1" : "0",
+    ...visParams(),
+  });
+  return "/api/frame?" + q.toString();
+}
+
+function cacheKey(frame) {
+  const v = visParams();
+  return [state.nonce, frame, el("bg").value, el("annotate").checked,
+          el("particles").checked,
+          el("fullbounds").checked, state.anim, state.file,
+          v.hide, v.show].join("|");
+}
+
+function setFrame(frame) {
+  frame = Math.max(state.start, Math.min(state.end, Math.round(frame)));
+  state.frame = frame;
+  el("timeline").value = frame;
+  el("frameNum").value = frame;
+  const rel = frame - state.start;
+  el("frameInfo").textContent =
+    `影格 ${frame} / ${state.end}   ${(rel / FPS).toFixed(2)}s`;
+
+  const key = cacheKey(frame);
+  const view = el("view");
+  const cached = state.cache.get(key);
+  if (cached) {
+    view.src = cached; view.hidden = false; el("empty").hidden = true;
+    el("spinner").style.display = "none";
+  } else {
+    const id = ++state.reqId;
+    el("spinner").style.display = "block";
+    const img = new Image();
+    img.onload = () => {
+      state.cache.set(key, img.src);
+      if (id === state.reqId) {
+        view.src = img.src; view.hidden = false; el("empty").hidden = true;
+        el("spinner").style.display = "none";
+        updateBadge(img);
+        applyZoom();          // naturalWidth 要等載入完才有值
+      }
+    };
+    img.onerror = () => {
+      if (id !== state.reqId) return;
+      el("spinner").style.display = "none";
+      el("status").innerHTML = `<span class="warn">影格 ${frame} 載入失敗</span>`;
+    };
+    img.src = frameURL(frame);
+  }
+  applyZoom();
+  scheduleTree();
+}
+
+function updateBadge(img) {
+  const badge = el("badge");
+  badge.hidden = false;
+  badge.textContent = `${img.naturalWidth} × ${img.naturalHeight} px`;
+}
+
+function applyZoom() {
+  const z = parseFloat(el("zoom").value);
+  const view = el("view");
+  // 用實際寬度而不是 CSS transform：transform 不會改變版面尺寸，
+  // 放大後圖會超出容器又產生不了捲軸，看不到的部分就永遠看不到。
+  if (!view.naturalWidth) { view.style.width = ""; return; }
+  view.style.width = Math.round(view.naturalWidth * z) + "px";
+  view.style.height = "auto";
+}
+
+// 背景把整段動畫的影格先抓下來，拖曳與播放才會順
+function prefetch() {
+  if (state.prefetch) state.prefetch.cancelled = true;
+  const job = { cancelled: false };
+  state.prefetch = job;
+  const total = state.end - state.start;
+  if (total <= 0 || total > 600) return;
+
+  let next = state.start;
+  const worker = () => {
+    if (job.cancelled) return;
+    while (next <= state.end && state.cache.has(cacheKey(next))) next++;
+    if (next > state.end) return;
+    const frame = next++;
+    const img = new Image();
+    img.onload = img.onerror = () => {
+      if (!job.cancelled) { state.cache.set(cacheKey(frame), img.src); worker(); }
+    };
+    img.src = frameURL(frame);
+  };
+  for (let i = 0; i < 4; i++) worker();
+}
+
+// ---------------------------------------------------------------- 播放
+let rafId = null, lastTime = 0, accumulator = 0;
+function tick(now) {
+  if (!state.playing) return;
+  const speed = parseFloat(el("speed").value);
+  if (lastTime) {
+    accumulator += (now - lastTime) / 1000 * FPS * speed;
+    while (accumulator >= 1) {
+      accumulator -= 1;
+      let next = state.frame + 1;
+      if (next > state.end) {
+        if (!el("loop").checked) { stopPlay(); return; }
+        next = state.start;
+      }
+      setFrame(next);
+    }
+  }
+  lastTime = now;
+  rafId = requestAnimationFrame(tick);
+}
+
+function startPlay() {
+  if (state.end <= state.start) return;
+  state.playing = true; lastTime = 0; accumulator = 0;
+  el("play").textContent = "⏸ 暫停";
+  rafId = requestAnimationFrame(tick);
+}
+function stopPlay() {
+  state.playing = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = null;
+  el("play").textContent = "▶ 播放";
+}
+
+// ---------------------------------------------------------------- 節點樹
+function scheduleTree() {
+  clearTimeout(state.treeTimer);
+  state.treeTimer = setTimeout(loadTree, 220);
+}
+
+async function loadTree() {
+  if (!state.file) return;
+  const q = new URLSearchParams({
+    file: state.file, frame: String(state.frame), anim: state.anim,
+    particles: el("particles").checked ? "1" : "0",
+    full: el("fullbounds").checked ? "1" : "0",
+    ...visParams(),
+  });
+  const data = await fetch("/api/tree?" + q).then(r => r.json()).catch(() => null);
+  if (!data || !data.tree) return;
+
+  const box = el("tree");
+  const open = new Set([...box.querySelectorAll(".kids:not(.collapsed)")].map(n => n.dataset.path));
+  box.innerHTML = "";
+  box.appendChild(renderNode(data.tree, open, true));
+
+  if (data.missingAssets && data.missingAssets.length) {
+    const warn = document.createElement("div");
+    warn.className = "warn";
+    warn.style.padding = "8px 4px";
+    warn.textContent = `⚠ 缺少 ${data.missingAssets.length} 個資源`;
+    warn.title = data.missingAssets.join("\n");
+    box.appendChild(warn);
+  }
+}
+
+function renderNode(node, open, isRoot) {
+  const wrap = document.createElement("div");
+  const row = document.createElement("div");
+  row.className = "node" + (node.visible ? "" : " hidden");
+
+  const kids = node.children || [];
+  const toggle = document.createElement("span");
+  toggle.className = "toggle";
+  toggle.textContent = kids.length ? "▾" : "";
+  row.appendChild(toggle);
+
+  // 眼睛鈕：預設照 .csd，點擊在「強制顯示 / 強制隱藏 / 回復預設」間循環
+  const eye = document.createElement("span");
+  const override = state.vis.get(node.path);
+  eye.className = "eye" + (override === true ? " on" : override === false ? " off" : "");
+  eye.textContent = override === true ? "◉" : override === false ? "◌" : (node.visible ? "●" : "○");
+  eye.title = override === undefined
+    ? "點擊覆寫可視狀態（目前照 .csd）"
+    : (override ? "已強制顯示，點擊改為強制隱藏" : "已強制隱藏，點擊回復 .csd 設定");
+  eye.onclick = (e) => {
+    e.stopPropagation();
+    const cur = state.vis.get(node.path);
+    if (cur === undefined) state.vis.set(node.path, !node.visible);
+    else if (cur === true) state.vis.set(node.path, false);
+    else state.vis.delete(node.path);
+    refreshVisibility();
+  };
+  row.appendChild(eye);
+
+  const label = document.createElement("span");
+  label.className = "label";
+  const rect = node.screenRect;
+  label.innerHTML =
+    `${escapeHTML(node.name || "(無名)")} <span class="kind">${node.type}</span>` +
+    `<span class="dim"> ${Math.round(rect[2])}×${Math.round(rect[3])}</span>`;
+  row.appendChild(label);
+  row.title = [
+    node.path, `類型 ${node.type}`, `位置 ${node.position.join(", ")}`,
+    `畫面 x=${rect[0].toFixed(0)} y=${rect[1].toFixed(0)}`,
+    node.source ? `資源 ${node.source}` : "",
+    node.text ? `文字 ${node.text}` : "",
+    node.document ? `引用 ${node.document}` : "",
+  ].filter(Boolean).join("\n");
+  wrap.appendChild(row);
+
+  if (kids.length) {
+    const holder = document.createElement("div");
+    holder.className = "kids";
+    holder.dataset.path = node.path;
+    holder.style.marginLeft = "13px";
+    if (!isRoot && open.size && !open.has(node.path)) holder.classList.add("collapsed");
+    for (const child of kids) holder.appendChild(renderNode(child, open, false));
+    wrap.appendChild(holder);
+    toggle.onclick = () => {
+      holder.classList.toggle("collapsed");
+      toggle.textContent = holder.classList.contains("collapsed") ? "▸" : "▾";
+    };
+  }
+  return wrap;
+}
+
+const escapeHTML = (s) => s.replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function refreshVisibility() {
+  el("visReset").disabled = state.vis.size === 0;
+  el("visReset").textContent = state.vis.size
+    ? `重設可視 (${state.vis.size})` : "重設可視";
+  setFrame(state.frame);      // 快取鍵含覆寫，會自動取新圖
+  loadTree();
+  prefetch();
+}
+
+// ---------------------------------------------------------------- 自動更新
+// .csd 被改動時（例如 AI agent 正在編輯）自動重畫，不必手動重選檔案。
+// 只輪詢檔案指紋，不解析檔案，成本約 7ms 一次。
+//
+// 重點是「等檔案寫完才重載」，不是越快越好：
+// agent 改一個版面往往是連續好幾次寫檔（改屬性、加節點、undo），
+// 中途去重載除了畫出看不到的中間狀態，還會在 Windows 上開檔擋住對方的原子替換。
+// 所以偵測到改動後先不動，等指紋連續兩次一樣——也就是對方停手了——才重載。
+const POLL_IDLE = 1500;     // 平常多久問一次
+const POLL_SETTLE = 400;    // 偵測到改動後改用比較密的間隔，好早點確認它寫完了
+const SETTLE_MAX = 8000;    // 一直寫個不停也不能無限等，超過就先畫一次
+
+function startWatching() {
+  state.pendingStamp = null;
+  state.pendingSince = 0;
+  setWatchEvery(POLL_IDLE);
+}
+
+function setWatchEvery(ms) {
+  if (state.watchEvery === ms) return;
+  state.watchEvery = ms;
+  clearInterval(state.watchTimer);
+  state.watchTimer = setInterval(checkForChanges, ms);
+}
+
+async function checkForChanges() {
+  if (!state.file || !state.info) return;
+  if (!el("autoReload").checked) return;
+  if (document.hidden) return;            // 分頁在背景時不必問
+
+  let stat;
+  try {
+    stat = await fetch("/api/stat?file=" + encodeURIComponent(state.file))
+      .then(r => r.ok ? r.json() : null);
+  } catch { return; }
+  if (!stat || stat.error) return;
+
+  const stamp = stat.mtime + "-" + stat.size + "-" + stat.boot;
+  const shown = state.info.mtime + "-" + state.info.size + "-" + state.info.boot;
+  if (stamp === shown) {                  // 沒動靜，回到悠閒的節奏
+    state.pendingStamp = null;
+    setWatchEvery(POLL_IDLE);
+    return;
+  }
+
+  const now = Date.now();
+  if (state.pendingStamp !== stamp) {     // 才剛變、或還在連續寫，繼續等它安定
+    state.pendingStamp = stamp;
+    if (!state.pendingSince) state.pendingSince = now;
+    setWatchEvery(POLL_SETTLE);
+    if (now - state.pendingSince < SETTLE_MAX) return;
+  }
+
+  // 指紋連兩次相同（或已經等太久）＝ 對方寫完了，可以重載
+  state.pendingStamp = null;
+  state.pendingSince = 0;
+  setWatchEvery(POLL_IDLE);
+
+  // 刻意不在這裡就把新指紋記起來：重載可能失敗（例如剛好讀到被換掉一半的檔），
+  // 先記下來的話下一輪會覺得「已經是最新的」而不再重試，畫面就卡在舊的一直不更新。
+  // 版本改由 reloadCurrent 拿到的 /api/info 一起帶回來，成功才生效。
+  await reloadCurrent("檔案已更新", true);
+}
+
+// nonce 讓網址一定改變，連素材（貼圖／字型）被換掉的情況也能重抓
+async function reloadCurrent(reason, autoRetry) {
+  state.nonce = Date.now();
+  state.cache.clear();
+  if (state.prefetch) state.prefetch.cancelled = true;
+
+  // 動畫片段可能整個換了，重新讀一次基本資訊
+  try {
+    const info = await fetch("/api/info?file=" + encodeURIComponent(state.file))
+      .then(r => r.json());
+    if (info && !info.error) {
+      ok = true;
+      state.info = info;
+      const keep = el("anim").value;
+      const select = el("anim");
+      select.innerHTML = "";
+      const full = document.createElement("option");
+      full.value = ""; full.textContent = `整條時間軸 (0~${info.duration})`;
+      select.appendChild(full);
+      for (const a of info.animations) {
+        const opt = document.createElement("option");
+        opt.value = a.name;
+        opt.textContent = `${a.name} (${a.start}~${a.end})`;
+        select.appendChild(opt);
+      }
+      select.value = info.animations.some(a => a.name === keep) ? keep : "";
+      const clip = info.animations.find(a => a.name === select.value);
+      state.anim = select.value;
+      state.start = clip ? clip.start : 0;
+      state.end = clip ? clip.end : info.duration;
+      const bar = el("timeline");
+      bar.min = state.start; bar.max = Math.max(state.start, state.end);
+      el("play").disabled = state.end <= state.start;
+    }
+  } catch {
+    // 自動更新時失敗就整輪放棄，state.info 維持舊值，下一次輪詢會再試一次
+    if (autoRetry) return false;
+  }
+  if (autoRetry && !ok) return false;
+
+  setFrame(Math.max(state.start, Math.min(state.end, state.frame)));
+  loadTree();
+  prefetch();
+  flashStatus(reason);
+  return true;
+}
+
+let statusTimer = null;
+function flashStatus(text) {
+  const box = el("reloadFlash");
+  box.textContent = text;
+  box.hidden = false;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => { box.hidden = true; }, 2000);
+}
+
+
+// ---------------------------------------------------------------- 事件
+el("play").onclick = () => state.playing ? stopPlay() : startPlay();
+el("anim").onchange = () => { stopPlay(); applyAnim(); };
+el("timeline").oninput = (e) => { stopPlay(); setFrame(+e.target.value); };
+el("frameNum").oninput = (e) => { stopPlay(); setFrame(+e.target.value); };
+el("zoom").onchange = applyZoom;
+el("visReset").onclick = () => { state.vis.clear(); refreshVisibility(); };
+el("reloadNow").onclick = () => reloadCurrent("已重新整理");
+el("autoReload").onchange = () => { if (el("autoReload").checked) checkForChanges(); };
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    checkForChanges();     // 切回分頁時立刻補一次
+    loadFiles(true);       // 新建的 .csd 不必等 F5
+  }
+});
+for (const id of ["annotate", "particles", "bg", "fullbounds"]) {
+  el(id).onchange = () => { setFrame(state.frame); prefetch(); };
+}
+
+document.onkeydown = (e) => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
+  if (!state.file) return;
+  if (e.code === "Space") { e.preventDefault(); state.playing ? stopPlay() : startPlay(); }
+  // 這些鍵都要 preventDefault：焦點若在時間軸滑桿上，瀏覽器會再自己動一次，
+  // 結果一次按鍵跳了兩格。
+  else if (e.code === "ArrowLeft") {
+    e.preventDefault(); stopPlay(); setFrame(state.frame - (e.shiftKey ? 10 : 1));
+  } else if (e.code === "ArrowRight") {
+    e.preventDefault(); stopPlay(); setFrame(state.frame + (e.shiftKey ? 10 : 1));
+  } else if (e.code === "Home") {
+    e.preventDefault(); stopPlay(); setFrame(state.start);
+  } else if (e.code === "End") {
+    e.preventDefault(); stopPlay(); setFrame(state.end);
+  }
+};
+
+loadFiles();
+setInterval(() => { if (!document.hidden) loadFiles(); }, 15000);
+</script>
+</body>
+</html>
