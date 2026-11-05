@@ -211,8 +211,28 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send(code, body, "application/json; charset=utf-8")
 
+    # ------------------------------------------------------------ 只接受這個檢視器自己的網頁
+    def _from_this_page(self) -> bool:
+        """擋掉別的網站打過來的請求。
+
+        伺服器只聽 127.0.0.1，但瀏覽器裡的其他網站仍然打得到它。DNS rebinding（惡意網域改解析成
+        127.0.0.1）會讓瀏覽器把對方當成同源、讀得到回應：.csd 清單、節點結構、渲染出來的畫面。
+        這種請求的 Host 是對方的網域，所以只收 Host 是 127.0.0.1／localhost 加上本伺服器埠號的；
+        帶 Origin 的（瀏覽器的跨站請求）也必須是自己。curl 之類不帶 Origin 的本機程式照常可用。
+        """
+        port = self.server.server_address[1]
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if (self.headers.get("Host") or "").strip().lower() not in allowed:
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin.strip().lower() in {"http://" + h for h in allowed}
+
     # ------------------------------------------------------------ 路由
     def do_GET(self) -> None:
+        if not self._from_this_page():
+            self.close_connection = True
+            self._json({"error": "拒絕：請求不是來自這個檢視器的網頁（請用 http://127.0.0.1:埠號/ 開啟）"}, 403)
+            return
         parsed = urlparse(self.path)
         route = unquote(parsed.path)
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
