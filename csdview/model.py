@@ -123,10 +123,15 @@ class Node:
     file: FileRef = field(default_factory=FileRef)          # Sprite / ImageView / Particle / ProjectNode
     normal_file: FileRef = field(default_factory=FileRef)   # Button 常態圖
     scale9: bool = False
+    # LeftEage/RightEage/TopEage/BottomEage：Cocos Studio 編輯器自己用的四角邊距
     cap_left: float = 0.0
     cap_right: float = 0.0
     cap_top: float = 0.0
     cap_bottom: float = 0.0
+    # Scale9OriginX/Y/Width/Height：「中間可拉伸區」在貼圖上的矩形（Y 從上往下）。
+    # 引擎（cocostudio 的 WidgetReader → setCapInsets）只讀這一組，LeftEage 那組完全不看，
+    # 右／下邊距要用貼圖尺寸減回來，所以這裡存原值，等知道貼圖多大再算（render.scale9_insets）。
+    scale9_rect: tuple[float, float, float, float] | None = None
 
     # 文字類
     text: str = ""

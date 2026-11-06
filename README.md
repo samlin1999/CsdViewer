@@ -109,9 +109,10 @@ csdview serve <cocosstudio 資料夾>
   顯示（這一格看不看得到、為什麼看不到：自己隱藏／動畫隱藏／父層隱藏／完全透明）、
   位置與大小、外觀（顏色色塊、透明度、混色）、
   資源（每張圖與字型找不找得到；按下圖、停用圖這類渲染用不到的也查）、
-  文字、九宮格、容器、進度、巢狀 CSD、百分比版面（算出來跟存的對不對得上）、
+  文字、九宮格（見下）、容器、進度、巢狀 CSD、百分比版面（算出來跟存的對不對得上）、
   動畫（每條軌道在這一格的值），最後是 `.csd` 裡寫的原始內容全文。
   被動畫改過的值會標「動畫」並附上 `.csd` 原本寫的值，一眼分得出「檔案寫的」與「這一格實際的」
+- **九宮格**：會用到九宮格的元件（ImageView、Button、Panel 類容器、進度條、滑桿）一律列出，沒啟用也列，並說明這種元件沒開九宮格時怎麼畫（ImageView／Button 整張拉伸，Panel 類是原尺寸置中、不拉伸）。啟用時列出貼圖與節點大小、四角（不拉伸的部分）、中間區被拉了幾倍，附一張畫上切線的貼圖預覽；畫面上選取的框裡也會畫出切線。節點比兩角加起來還小、或編輯器另存的 `LeftEage` 那組跟引擎用的不一樣時會標警告
 - 下方：動畫下拉選單、播放鍵、時間軸滑桿、逐格輸入框，以及「畫布外內容」開關
   （預設開啟；不少 `.csd` 會把元件先擺在設計區外，關掉就只看設計區）
 
@@ -225,7 +226,7 @@ for node in result.nodes:
 | 檔案格式 | Cocos Studio 2.x（`<GameProjectFile>`）與 3.x（`<GameFile>`） |
 | 節點 | Sprite、ImageView、Panel、Button、CheckBox、Text、TextBMFont、Node、Layer、ProjectNode、ScrollView／ListView／PageView、LoadingBar、Slider |
 | 變換 | 位移、旋轉、skew（RotationSkewX/Y 分開）、縮放、錨點、翻轉 |
-| 外觀 | 透明度與顏色的階層累乘、加法混色、九宮格、`ClipAble` 裁切、Panel 底色；Panel／ScrollView 類的底圖沒開九宮格時照引擎以原尺寸置中、不拉伸（ImageView 才拉滿 Size） |
+| 外觀 | 透明度與顏色的階層累乘、加法混色、九宮格（照引擎：讀 `Scale9OriginX/Y/Width/Height`，全 0 用 1/3，節點比兩角小時兩角各縮成一半）、`ClipAble` 裁切、Panel 底色；Panel／ScrollView 類的底圖沒開九宮格時照引擎以原尺寸置中、不拉伸（ImageView 才拉滿 Size） |
 | 動畫 | Position／Scale／RotationSkew／Alpha／CColor／VisibleForFrame／FileData 換圖／BlendFunc／AnchorPoint／FrameEvent／巢狀動畫 ActionValue |
 | 緩動 | cocos2d-x 全部 31 種 tweenfunc，以及 `<Points>` 自訂貝茲曲線 |
 | 資源 | 鬆散 PNG、`.plist` 圖集（含旋轉與裁邊還原）、AngelCode `.fnt` 點陣字、TTF／系統字型（含中文） |

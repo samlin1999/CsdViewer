@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import os
 
+from PIL import Image
+
 from . import anim
 from .assets import AssetLibrary
-from .model import BlendFunc, Color, Document, FileRef
-from .render import NodeReport
+from .model import BlendFunc, Color, Document, FileRef, Node
+from .render import NodeReport, scale9_insets, scale9_slices
 
 # ---------------------------------------------------------------- 對照表
 
@@ -159,6 +161,49 @@ def ref_status(library: AssetLibrary, kind: str, path: str, plist: str) -> tuple
             return "ok", "找得到（圖集）"
         return "missing", f"圖集 {plist} 裡沒有這張"
     return "missing", "找不到"
+
+
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+
+def _inside(library: AssetLibrary, path: str) -> bool:
+    full = os.path.normcase(os.path.abspath(path))
+    for base in [library.root, *library.extra_roots]:
+        base = os.path.normcase(os.path.abspath(base))
+        try:
+            if os.path.commonpath([base, full]) == base:
+                return True
+        except ValueError:                # 不同磁碟機
+            continue
+    return False
+
+
+def load_texture(library: AssetLibrary, kind: str, path: str, plist: str) -> Image.Image | None:
+    """讀一張貼圖給預覽／量尺寸用，不碰素材庫的 missing（理由同 ref_status）。
+
+    只認專案根目錄底下的圖檔：路徑是使用者網址帶進來的，`../../` 不能讀到專案外。
+    """
+    path = (path or "").replace("\\", "/")
+    plist = (plist or "").replace("\\", "/")
+    if not path or kind == "Default" or not path.lower().endswith(_IMAGE_EXTS):
+        return None
+    loose = library.resolve(path)
+    if loose and _inside(library, loose):
+        try:
+            # 讀完立刻放掉檔案：Image.open 會一直握著 handle，Windows 上會擋住
+            # 別的工具（例如 AI 改圖時的原子替換）
+            with Image.open(loose) as image:
+                image.load()
+                return image.copy()
+        except Exception:
+            return None
+    if plist and plist.lower().endswith(".plist"):
+        found = library.resolve(plist)
+        if found and _inside(library, found):
+            atlas = library.atlas(plist)
+            if atlas is not None:
+                return atlas.sub_image(path)
+    return None
 
 
 def _font_status(library: AssetLibrary, path: str) -> tuple[str, str]:
@@ -323,12 +368,9 @@ def node_details(report: NodeReport, chain: list[NodeReport], library: AssetLibr
         sections.append({"title": "文字", "rows": tx})
 
     # ---- 九宮格
-    if node.scale9:
-        sections.append({"title": "九宮格", "rows": [
-            row("啟用", "是"),
-            row("邊距", f"左 {num(node.cap_left)}　右 {num(node.cap_right)}　"
-                        f"上 {num(node.cap_top)}　下 {num(node.cap_bottom)}"),
-        ]})
+    slice_rows, overlay = _scale9_section(report, library)
+    if slice_rows:
+        sections.append({"title": "九宮格", "rows": slice_rows})
 
     # ---- 容器
     if node.ctype in _CONTAINERS:
@@ -421,8 +463,127 @@ def node_details(report: NodeReport, chain: list[NodeReport], library: AssetLibr
             sections.append({"title": title, "rows": an})
 
     raw_attrs = {k: v for k, v in node.attrs.items() if k not in _SHOWN_ATTRS}
-    return {"sections": sections,
-            "raw": {"attrs": raw_attrs, "elements": node.elements}}
+    out = {"sections": sections,
+           "raw": {"attrs": raw_attrs, "elements": node.elements}}
+    if overlay:
+        out["slice9"] = overlay
+    return out
+
+
+# ---------------------------------------------------------------- 九宮格
+
+# 支援九宮格的元件（cocostudio 的 WidgetReader 會讀 Scale9Enable 的那些）
+_SCALE9_TYPES = {"ImageViewObjectData", "ButtonObjectData", "LoadingBarObjectData",
+                 "SliderObjectData"} | _CONTAINERS
+
+
+def _scale9_image(node: Node) -> FileRef:
+    if node.ctype in ("ButtonObjectData", "LoadingBarObjectData", "SliderObjectData"):
+        return node.normal_file
+    return node.file
+
+
+def _sides(v) -> str:
+    left, right, top, bottom = v
+    return f"左 {num(left)}　右 {num(right)}　上 {num(top)}　下 {num(bottom)}"
+
+
+def _scale9_section(report: NodeReport, library: AssetLibrary) -> tuple[list[dict], dict | None]:
+    """九宮格分區的列，以及畫面上要畫的切線（沒啟用或不適用時是 None）。
+
+    數字全部照引擎算（render.scale9_insets / scale9_slices，渲染也用同一套），
+    所以這裡寫的就是畫出來的樣子。
+    """
+    node = report.node
+    if node is None or node.ctype not in _SCALE9_TYPES:
+        return [], None
+    ref = _scale9_image(node)
+    if not ref or not ref.path or ref.type == "Default":
+        return [], None
+    texture = load_texture(library, ref.type, ref.path, ref.plist)
+    if texture is None:
+        return [row("啟用", "是" if node.scale9 else "否"),
+                row("貼圖", "讀不到，沒辦法算切片", status="warn")], None
+    tex_w, tex_h = texture.size
+    node_w, node_h = node.width, node.height
+    layout = node.ctype in _CONTAINERS
+
+    rows = []
+    if node.scale9:
+        rows.append(row("啟用", "是", status="ok", note="四角維持原尺寸，只拉伸中間"))
+    else:
+        rows.append(row("啟用", "否", note="底圖照原尺寸擺在框正中央，不拉伸（Panel 類容器的規則）"
+                        if layout else "整張圖直接拉伸到節點大小，四角會跟著變形"))
+    rows.append(row("貼圖大小", f"{tex_w} × {tex_h}"))
+    rows.append(row("節點大小", f"{num(node_w)} × {num(node_h)}"))
+
+    preview = {"type": ref.type, "path": ref.path, "plist": ref.plist,
+               "texW": tex_w, "texH": tex_h, "enabled": node.scale9}
+    overlay = None
+    if node.scale9:
+        insets = scale9_insets(node, tex_w, tex_h)
+        preview["insets"] = [round(v, 2) for v in insets]
+        if node.scale9_rect is None:
+            origin = "這個檔沒有 Scale9* 屬性，改用 LeftEage 那組"
+        elif node.scale9_rect == (0.0, 0.0, 0.0, 0.0):
+            origin = "Scale9* 全部是 0，引擎改用貼圖的 1/3"
+        else:
+            ox, oy, w, h = node.scale9_rect
+            origin = (f"由 Scale9OriginX/Y/Width/Height = {num(ox)}, {num(oy)}, {num(w)}, {num(h)}"
+                      " 換算（引擎只讀這組）")
+        rows.append(row("四角（不拉伸）", _sides(insets), note=origin))
+
+        mid_w, mid_h = tex_w - insets[0] - insets[1], tex_h - insets[2] - insets[3]
+        drawn = scale9_slices(insets, node_w, node_h)
+        out_w = max(0.0, node_w - drawn[0] - drawn[1])
+        out_h = max(0.0, node_h - drawn[2] - drawn[3])
+
+        def factor(out: float, mid: float) -> str:
+            if mid <= 0:
+                return "無（中間寬度 0）"
+            return f"×{num(out / mid)}"
+
+        rows.append(row("中間拉伸區", f"圖上 {num(mid_w)} × {num(mid_h)} → 畫成 {num(out_w)} × {num(out_h)}",
+                        note=f"橫向 {factor(out_w, mid_w)}、縱向 {factor(out_h, mid_h)}"))
+
+        squeezed = [axis for axis, small in (("寬", node_w < insets[0] + insets[1]),
+                                             ("高", node_h < insets[2] + insets[3])) if small]
+        if squeezed:
+            rows.append(row("注意", f"節點的{'、'.join(squeezed)}比兩角加起來還小", status="warn",
+                            note=f"引擎會把兩角各壓成一半（{_sides(drawn)}），中間不畫，"
+                                 "圖案會被擠扁"))
+
+        editor = (node.cap_left, node.cap_right, node.cap_top, node.cap_bottom)
+        if node.scale9_rect is not None and any(editor) and \
+                max(abs(a - b) for a, b in zip(editor, insets)) > 1.0:
+            rows.append(row("編輯器的值", _sides(editor), status="warn",
+                            note="跟上面不一致。這是 LeftEage／RightEage／TopEage／BottomEage，只有 Cocos Studio "
+                                 "編輯器自己用；遊戲（引擎）用的是上面那組。兩組不同時，"
+                                 "編輯器裡調的四角跟遊戲畫面可能對不上。csdview 照引擎畫"))
+
+        overlay = _slice_overlay(report, drawn, node_w, node_h)
+
+    rows.append(row("切片預覽", "", slice9=preview))
+    return rows, overlay
+
+
+def _slice_overlay(report: NodeReport, drawn, node_w: float, node_h: float) -> dict | None:
+    """畫面上選取框裡的切線。框是 screenRect（外接矩形），所以只有沒旋轉時畫得準。"""
+    quad = report.quad
+    if node_w <= 0 or node_h <= 0 or len(quad) != 4:
+        return None
+    (x0, y0), (x1, y1), _p2, (x3, y3) = quad
+    aligned = abs(y1 - y0) < 0.5 and abs(x3 - x0) < 0.5
+    if not aligned:
+        return {"aligned": False}
+    node = report.node
+    # 鏡像：負縮放（quad 的方向反過來）與 FlipX/FlipY 都會讓左右／上下對調
+    mirror_x = (x1 < x0) != bool(node.flip_x)
+    mirror_y = (y3 > y0) != bool(node.flip_y)
+    left, right, top, bottom = drawn
+    return {"aligned": True, "nodeW": node_w, "nodeH": node_h,
+            "left": right if mirror_x else left, "right": left if mirror_x else right,
+            "top": bottom if mirror_y else top, "bottom": top if mirror_y else bottom}
 
 
 def _layout_base(chain: list[NodeReport], doc) -> tuple[float, float]:

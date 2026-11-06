@@ -104,6 +104,19 @@
   .box.hover .tag { background: #000c; color: #fff; }
   .box .tag.below { bottom: auto; top: 100%; margin: 4px 0 0; }
   .box .tag.right { left: auto; right: -2px; }
+  /* 九宮格切線：選取框裡、屬性面板的預覽圖上 */
+  .s9 { position: absolute; display: none; pointer-events: none; }
+  .s9.v { top: 0; bottom: 0; width: 0; border-left: 1px dashed #36e0ff; }
+  .s9.h { left: 0; right: 0; height: 0; border-top: 1px dashed #36e0ff; }
+  .s9prev { position: relative; display: inline-block; line-height: 0; margin-top: 2px;
+            background: repeating-conic-gradient(#3a3d46 0% 25%, #2a2c33 0% 50%) 0 0 / 12px 12px;
+            outline: 1px solid var(--line); }
+  .s9prev { max-width: 100%; }
+  .s9prev img { display: block; image-rendering: auto; max-width: 100%; height: auto; }
+  .s9prev .s9 { display: block; }
+  .s9prev .s9.v, .s9prev .s9.h { border-color: #36e0ff; }
+  .s9prev .corner { position: absolute; background: #36e0ff40; pointer-events: none; }
+  .s9legend { display: block; color: var(--faint); font-size: 11px; line-height: 1.45; margin-top: 4px; }
 
   /* 節點樹 */
   #tree { height: 40%; min-height: 80px; overflow: auto; padding: 2px 8px 10px; font-size: 12px;
@@ -205,7 +218,9 @@
     <div id="frame">
       <img id="view" hidden alt="">
       <div id="hoverBox" class="box hover"><span class="tag" id="hoverTag"></span></div>
-      <div id="selBox" class="box sel"><span class="tag" id="selTag"></span></div>
+      <div id="selBox" class="box sel"><span class="tag" id="selTag"></span>
+        <div class="s9 v" id="s9L"></div><div class="s9 v" id="s9R"></div>
+        <div class="s9 h" id="s9T"></div><div class="s9 h" id="s9B"></div></div>
     </div>
     <div id="badge" hidden></div>
     <div id="spinner"></div>
@@ -299,6 +314,8 @@ const state = {
   // 最後一次載入的節點樹：flat 是前序（後面的畫在上面），byId 查節點與它的那一列
   flat: [], byId: new Map(), byPath: new Map(), treeFresh: true, imageSize: null,
   sel: null, hover: null, lastClick: null,
+  // 選取節點的九宮格切線（屬性面板載入時一起拿到）
+  selSlice: null,
   check: null,
   // 屬性面板裡被收起來的分區，換節點時維持
   closed: new Set(["原始設定"]),
@@ -384,7 +401,8 @@ async function selectFile(path, row) {
   state.file = path;
   state.vis.clear();
   state.flat = []; state.byId = new Map(); state.byPath = new Map();
-  state.treeFresh = true; state.sel = null; state.hover = null; state.check = null;
+  state.treeFresh = true; state.sel = null; state.selSlice = null;
+  state.hover = null; state.check = null;
   el("visReset").disabled = true;
   el("visReset").textContent = "重設可視";
   el("checkPanel").hidden = true;
@@ -875,6 +893,7 @@ function selectNode(id, reveal) {
   const entry = state.byId.get(id);
   if (!entry) return;
   state.sel = { id, path: entry.node.path };
+  if (state.selSlice && state.selSlice.id !== id) state.selSlice = null;
   markSelectedRow();
   if (reveal) {
     for (let p = entry.parentId; p >= 0; p = state.byId.get(p).parentId) expand(state.byId.get(p));
@@ -888,6 +907,7 @@ function selectNode(id, reveal) {
 
 function clearSelection(reason) {
   state.sel = null;
+  state.selSlice = null;
   markSelectedRow();
   updateSelChip();
   drawOverlay();
@@ -942,7 +962,29 @@ function placeBox(box, tag, entry, isSel) {
   // 標籤超出圖的右緣就改成靠右對齊，免得被切掉
   tag.classList.remove("right");
   if (tag.offsetWidth && x * z + tag.offsetWidth > el("view").clientWidth) tag.classList.add("right");
-  if (isSel) box.classList.toggle("ghost", !n.visible);
+  if (isSel) {
+    box.classList.toggle("ghost", !n.visible);
+    placeSliceLines(entry, w * z, h * z);
+  }
+}
+
+// 選取的節點開了九宮格：在框裡畫出四條切線（四角不拉伸、中間拉伸的分界）。
+// 數字是伺服器照引擎規則算好的（屬性面板同一份），框是外接矩形，所以旋轉過就不畫。
+function placeSliceLines(entry, boxW, boxH) {
+  const s = state.selSlice;
+  const ids = ["s9L", "s9R", "s9T", "s9B"];
+  const show = s && s.aligned && state.sel && s.id === state.sel.id && entry.node.id === s.id;
+  if (!show) { for (const id of ids) el(id).style.display = "none"; return; }
+  const rx = boxW / s.nodeW, ry = boxH / s.nodeH;
+  const at = { s9L: ["left", s.left * rx], s9R: ["left", boxW - s.right * rx],
+               s9T: ["top", s.top * ry], s9B: ["top", boxH - s.bottom * ry] };
+  for (const id of ids) {
+    const [prop, px] = at[id];
+    const line = el(id);
+    line.style.display = "block";
+    line.style.left = line.style.top = "";
+    line.style[prop] = px + "px";
+  }
 }
 
 // 畫面上某一點底下的節點，最上層的在前面。
@@ -1026,13 +1068,46 @@ async function loadInspector() {
       `<div class="hint warn">${escapeHTML((data && data.error) || "讀不到這個節點的屬性")}</div>`;
     return;
   }
+  state.selSlice = data.slice9 ? { id: state.sel.id, ...data.slice9 } : null;
   renderInspector(data);
+  drawOverlay();
 }
 
 const STATUS_ICON = { ok: "✓", missing: "✗", error: "✗", warn: "⚠", default: "◇" };
 const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 
+// 九宮格預覽：貼圖照比例縮放（最寬 240、不超過面板寬、最高 140、最多放大 4 倍），
+// 切線與四角用百分比擺，跟縮放多少無關
+function sliceHTML(p) {
+  const scale = Math.min(240 / p.texW, 140 / p.texH, 4);
+  const w = Math.max(1, Math.round(p.texW * scale));
+  const q = new URLSearchParams({ file: state.file, type: p.type, path: p.path, plist: p.plist || "" });
+  let html = `<span class="s9prev"><img src="/api/texture?${q}" width="${w}" alt="">`;
+  if (p.enabled && p.insets) {
+    const [l, r, t, b] = p.insets;
+    const px = (v) => (v / p.texW * 100).toFixed(3) + "%";
+    const py = (v) => (v / p.texH * 100).toFixed(3) + "%";
+    for (const [x, y, cw, ch] of [[0, 0, l, t], [p.texW - r, 0, r, t],
+                                  [0, p.texH - b, l, b], [p.texW - r, p.texH - b, r, b]]) {
+      if (cw > 0 && ch > 0) {
+        html += `<span class="corner" style="left:${px(x)};top:${py(y)};width:${px(cw)};height:${py(ch)}"></span>`;
+      }
+    }
+    html += `<span class="s9 v" style="left:${px(l)}"></span><span class="s9 v" style="left:${px(p.texW - r)}"></span>` +
+            `<span class="s9 h" style="top:${py(t)}"></span><span class="s9 h" style="top:${py(p.texH - b)}"></span>`;
+  }
+  html += "</span>";
+  html += `<span class="s9legend">${p.enabled
+    ? "藍線是切線：四個角（淡藍）維持原尺寸，上下兩條只橫向拉、左右兩條只縱向拉，正中間兩個方向都拉。" +
+      "選取時畫面上的框裡也會畫出同樣的切線。"
+    : "沒有啟用九宮格，這是原圖。"}</span>`;
+  return html;
+}
+
 function rowHTML(r) {
+  if (r.slice9) {
+    return `<div class="k">${escapeHTML(r.k)}</div><div class="v">${sliceHTML(r.slice9)}</div>`;
+  }
   let v = "";
   if (r.status && STATUS_ICON[r.status]) v += `<span class="st-${r.status}">${STATUS_ICON[r.status]}</span> `;
   if (r.color && COLOR_RE.test(r.color)) v += `<span class="swatch" style="background:${r.color}"></span>`;

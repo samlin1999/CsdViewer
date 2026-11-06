@@ -374,6 +374,8 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "/api/check":
                 full = self.state.resolve(query.get("file", ""))
                 self._json(self.state.check(full))
+            elif route == "/api/texture":
+                self._texture(query)
             elif route == "/api/reset":
                 self.state.reset(self.state.resolve(query.get("file", "")))
                 self._json({"ok": True})
@@ -509,6 +511,26 @@ class Handler(BaseHTTPRequestHandler):
                                     self._visibility(query), span, doc)
         self._json({"id": index, "path": report.path, "name": report.name,
                     "type": report.ctype.replace("ObjectData", ""), **body})
+
+    def _texture(self, query) -> None:
+        """屬性面板的貼圖預覽（九宮格切線畫在上面）。
+
+        只給專案裡的圖：路徑解析後必須落在專案根目錄（或 --extra-root）底下，
+        不然 `../../` 就能讀到磁碟上任何一張圖。大圖先縮到長邊 512，預覽用不到原尺寸，
+        前端用百分比擺切線，縮多少都對得上。
+        """
+        full = self.state.resolve(query.get("file", ""))
+        library = self.state.library(full)
+        image = details.load_texture(library, query.get("type", "Normal"),
+                                     query.get("path", ""), query.get("plist", ""))
+        if image is None:
+            self._json({"error": "找不到這張圖"}, 404)
+            return
+        image = image.copy()
+        image.thumbnail((512, 512))
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG", compress_level=3)
+        self._send(200, buffer.getvalue(), "image/png")
 
     def _frame(self, query) -> None:
         rel = query.get("file", "")

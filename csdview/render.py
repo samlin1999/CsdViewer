@@ -273,6 +273,56 @@ class RenderOptions:
 
 _PARTICLE_COLOR = (255, 0, 255)
 
+def scale9_insets(node: Node, tex_w: float, tex_h: float) -> tuple[float, float, float, float]:
+    """引擎實際用的九宮格四角 (左, 右, 上, 下)，單位是貼圖像素。
+
+    照 cocos2d-x ui::Scale9Sprite::setCapInsets：
+    - 讀的是 Scale9OriginX/Y/Width/Height（中間可拉伸區），不是 LeftEage 那組；
+    - 四個值全是 0 時用貼圖的 1/3；
+    - Origin 超出貼圖歸 0、Width/Height 超出貼圖變 1；
+    - 中間區超出貼圖右／下緣時被裁掉（跟貼圖取交集），所以右／下邊距不會是負的。
+    沒有 Scale9* 屬性的舊檔才退回 LeftEage 那組。
+    """
+    if node.scale9_rect is None:
+        left, right = node.cap_left, node.cap_right
+        top, bottom = node.cap_top, node.cap_bottom
+        left = max(0.0, min(left, tex_w))
+        right = max(0.0, min(right, tex_w - left))
+        top = max(0.0, min(top, tex_h))
+        bottom = max(0.0, min(bottom, tex_h - top))
+        return left, right, top, bottom
+    ox, oy, w, h = node.scale9_rect
+    if (ox, oy, w, h) == (0.0, 0.0, 0.0, 0.0):
+        ox, oy, w, h = tex_w / 3, tex_h / 3, tex_w / 3, tex_h / 3
+    if ox > tex_w:
+        ox = 0.0
+    if oy > tex_h:
+        oy = 0.0
+    if w > tex_w:
+        w = 1.0
+    if h > tex_h:
+        h = 1.0
+    x1, y1 = max(ox, 0.0), max(oy, 0.0)
+    x2, y2 = min(ox + w, tex_w), min(oy + h, tex_h)
+    mid_w, mid_h = max(0.0, x2 - x1), max(0.0, y2 - y1)
+    return x1, tex_w - x1 - mid_w, y1, tex_h - y1 - mid_h
+
+
+def scale9_slices(insets: tuple[float, float, float, float],
+                  dst_w: float, dst_h: float) -> tuple[float, float, float, float]:
+    """九宮格畫到 dst_w x dst_h 時，四角實際佔多大 (左, 右, 上, 下)。
+
+    照 cocos2d-x Sprite::updatePoly：四角維持原尺寸、中間拉伸；
+    框比「左＋右」還窄時，左右兩角各縮成框寬的一半、中間不畫（上下同理）。
+    """
+    left, right, top, bottom = insets
+    if dst_w < left + right:
+        left = right = dst_w / 2
+    if dst_h < top + bottom:
+        top = bottom = dst_h / 2
+    return left, right, top, bottom
+
+
 # 繼承 ui::Layout 的容器：底圖沒開九宮格時以原尺寸置中，不拉伸
 _LAYOUT_TYPES = frozenset({"PanelObjectData", "ScrollViewObjectData",
                            "ListViewObjectData", "PageViewObjectData"})
@@ -856,29 +906,28 @@ class Renderer:
         """
         target = (max(1, int(round(node.width))), max(1, int(round(node.height))))
         identity = source_key or hashlib.sha1(image.tobytes()).hexdigest()
-        key = (identity, image.size, target,
-               node.cap_left, node.cap_right, node.cap_top, node.cap_bottom)
+        insets = scale9_insets(node, *image.size)
+        key = (identity, image.size, target, insets)
         return memoize(self._scale9_cache, key, self._scale9_lock,
-                       lambda: self._build_scale9(image, node, target), limit=128)
+                       lambda: self._build_scale9(image, insets, target), limit=128)
 
-    def _build_scale9(self, image: Image.Image, node: Node,
+    def _build_scale9(self, image: Image.Image,
+                      insets: tuple[float, float, float, float],
                       target: tuple[int, int]) -> Image.Image:
         src_w, src_h = image.size
-        left = int(max(0, min(node.cap_left, src_w - 1)))
-        right = int(max(0, min(node.cap_right, src_w - 1 - left)))
-        top = int(max(0, min(node.cap_top, src_h - 1)))
-        bottom = int(max(0, min(node.cap_bottom, src_h - 1 - top)))
+        left, right, top, bottom = (int(round(v)) for v in insets)
         if left + right == 0 and top + bottom == 0:
             return image.resize(target, Image.BILINEAR)
 
         dst_w, dst_h = target
-        mid_dst_w = max(0, dst_w - left - right)
-        mid_dst_h = max(0, dst_h - top - bottom)
+        # 四角在畫面上佔多大（框太小時兩角各縮成一半，同引擎）
+        d_left, d_right, d_top, d_bottom = (
+            int(round(v)) for v in scale9_slices((left, right, top, bottom), dst_w, dst_h))
 
         xs_src = [0, left, src_w - right, src_w]
         ys_src = [0, top, src_h - bottom, src_h]
-        xs_dst = [0, left, left + mid_dst_w, dst_w]
-        ys_dst = [0, top, top + mid_dst_h, dst_h]
+        xs_dst = [0, d_left, dst_w - d_right, dst_w]
+        ys_dst = [0, d_top, dst_h - d_bottom, dst_h]
 
         result = Image.new("RGBA", target, (0, 0, 0, 0))
         for row in range(3):

@@ -139,6 +139,10 @@ def _parse_node(el: ET.Element) -> Node:
     n.cap_bottom = _f(el, "BottomEage", _f(el, "Scale9OriginY"))
     n.cap_right = _f(el, "RightEage", 0.0)
     n.cap_top = _f(el, "TopEage", 0.0)
+    if any(el.get(k) is not None for k in
+           ("Scale9OriginX", "Scale9OriginY", "Scale9Width", "Scale9Height")):
+        n.scale9_rect = (_f(el, "Scale9OriginX"), _f(el, "Scale9OriginY"),
+                         _f(el, "Scale9Width"), _f(el, "Scale9Height"))
 
     # ---- 圖像來源
     n.file = _file_ref(el.find("FileData"))

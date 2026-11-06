@@ -113,6 +113,22 @@ MAIN = """<GameFile>
           <Size X="60" Y="40" /><Position X="60" Y="0" />
           <FileData Type="Normal" Path="red.png" Plist="" />
         </AbstractNodeData>
+        <AbstractNodeData Name="s9mismatch" ActionTag="114" Tag="15" ctype="ImageViewObjectData"
+            Scale9Enable="True" LeftEage="5" RightEage="5" TopEage="5" BottomEage="5"
+            Scale9OriginX="10" Scale9OriginY="10" Scale9Width="10" Scale9Height="10">
+          <Size X="60" Y="30" /><Position X="0" Y="120" />
+          <FileData Type="Normal" Path="bands.png" Plist="" />
+        </AbstractNodeData>
+        <AbstractNodeData Name="s9squeeze" ActionTag="115" Tag="16" ctype="ImageViewObjectData"
+            Scale9Enable="True" Scale9OriginX="10" Scale9OriginY="10" Scale9Width="10" Scale9Height="10">
+          <Size X="12" Y="30" /><Position X="70" Y="120" />
+          <FileData Type="Normal" Path="bands.png" Plist="" />
+        </AbstractNodeData>
+        <AbstractNodeData Name="s9zero" ActionTag="116" Tag="17" ctype="ImageViewObjectData"
+            Scale9Enable="True" Scale9OriginX="0" Scale9OriginY="0" Scale9Width="0" Scale9Height="0">
+          <Size X="60" Y="30" /><Position X="90" Y="120" />
+          <FileData Type="Normal" Path="bands.png" Plist="" />
+        </AbstractNodeData>
         <AbstractNodeData Name="offscreen" ActionTag="110" Tag="11" ctype="PanelObjectData" ClipAble="True">
           <Size X="40" Y="40" /><Position X="-5000" Y="-5000" />
           <Children>
@@ -134,6 +150,13 @@ def build_project() -> str:
     os.makedirs(root)
     Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(os.path.join(root, "red.png"))
     Image.new("RGBA", (100, 100), (0, 255, 0, 255)).save(os.path.join(root, "big.png"))
+    # 30x30 直條紋：左 10 藍、中 10 綠、右 10 紅。九宮格切在哪裡，看顏色就知道
+    bands = Image.new("RGBA", (30, 30), (0, 0, 255, 255))
+    bands.paste((0, 255, 0, 255), (10, 0, 20, 30))
+    bands.paste((255, 0, 0, 255), (20, 0, 30, 30))
+    bands.save(os.path.join(root, "bands.png"))
+    # 專案外的一張圖：貼圖 API 不能讀到它
+    Image.new("RGBA", (4, 4), (1, 2, 3, 255)).save(os.path.join(os.path.dirname(root), "outside.png"))
     for name, text in (("Main.csd", MAIN), ("Inner.csd", INNER)):
         with open(os.path.join(root, name), "w", encoding="utf-8") as fh:
             fh.write(text)
@@ -287,6 +310,39 @@ def main() -> int:
                 slots.release()
         check("預抓道空出來就接著算", done.wait(10))
 
+        # ---------------------------------------------------------- 九宮格（屬性面板）
+        def node_rows(name):
+            n = next(x for x in flat if x["name"] == name)
+            _c, d = get_json("/api/node", file="Main.csd", frame=0, full=1, id=n["id"], path=n["path"])
+            return rows_of(d), d
+
+        r, mismatch = node_rows("s9mismatch")
+        check("九宮格：四角照引擎（Scale9*）算",
+              r.get("九宮格/四角（不拉伸）", {}).get("v") == "左 10　右 10　上 10　下 10",
+              r.get("九宮格/四角（不拉伸）"))
+        check("九宮格：LeftEage 那組不一致時警告",
+              r.get("九宮格/編輯器的值", {}).get("status") == "warn"
+              and "左 5" in r.get("九宮格/編輯器的值", {}).get("v", ""))
+        check("九宮格：附預覽（貼圖與切線）",
+              r.get("九宮格/切片預覽", {}).get("slice9", {}).get("insets") == [10, 10, 10, 10])
+        check("九宮格：畫面切線資料", mismatch.get("slice9", {}).get("left") == 10
+              and mismatch["slice9"].get("aligned"), mismatch.get("slice9"))
+        r, squeeze = node_rows("s9squeeze")
+        check("九宮格：節點比兩角小時警告", r.get("九宮格/注意", {}).get("status") == "warn")
+        check("九宮格：切線照引擎縮成一半",
+              squeeze.get("slice9", {}).get("left") == 6 and squeeze["slice9"].get("right") == 6,
+              squeeze.get("slice9"))
+        r, _d = node_rows("bgPanel")
+        check("九宮格沒啟用也列出來，並說明 Panel 的規則",
+              r.get("九宮格/啟用", {}).get("v") == "否" and "正中央" in r["九宮格/啟用"].get("note", ""))
+
+        code, tex = get("/api/texture", file="Main.csd", type="Normal", path="bands.png")
+        check("貼圖 API 回傳專案裡的圖", code == 200 and tex[:4] == b"\x89PNG")
+        code, _b = get("/api/texture", file="Main.csd", type="Normal", path="../outside.png")
+        check("貼圖 API 讀不到專案外的圖", code == 404)
+        code, _b = get("/api/texture", file="Main.csd", type="Normal", path="Main.csd")
+        check("貼圖 API 不給非圖檔", code == 404)
+
         # ---------------------------------------------------------- 重新整理
         get_json("/api/reset", file="Main.csd")
         check("reset 丟掉這個檔案的素材庫", full not in state._libraries)
@@ -329,6 +385,22 @@ def main() -> int:
     vx, vy, vw, vh = box_of("stretchView")
     stretched = image.getpixel((vx + 2, vy + 2))
     check("ImageView 照 Size 拉滿", stretched[:3] == (255, 0, 0) and stretched[3] == 255, stretched)
+
+    # ---------------------------------------------------------- 九宮格（畫出來的像素）
+    # 條紋貼圖：左 10 藍、中 10 綠、右 10 紅；看節點裡某一欄是什麼顏色，就知道切在哪
+    def color_at(name, local_x):
+        x, y, _w, h = box_of(name)
+        return image.getpixel((x + local_x, y + h // 2))[:3]
+
+    check("九宮格讀 Scale9*（不是 LeftEage）：x=11 已經是中間的綠",
+          color_at("s9mismatch", 11) == (0, 255, 0), color_at("s9mismatch", 11))
+    check("九宮格右角維持原尺寸：倒數第 5 欄是紅", color_at("s9mismatch", 55) == (255, 0, 0))
+    check("Scale9* 全是 0 時用 1/3：x=11 是中間的綠",
+          color_at("s9zero", 11) == (0, 255, 0), color_at("s9zero", 11))
+    check("節點比兩角窄：左半是左角（藍）", color_at("s9squeeze", 3) == (0, 0, 255),
+          color_at("s9squeeze", 3))
+    check("節點比兩角窄：右半是右角（紅），兩角各佔一半", color_at("s9squeeze", 8) == (255, 0, 0),
+          color_at("s9squeeze", 8))
 
     print()
     print(f"通過 {len(PASS)}，失敗 {len(FAIL)}")
