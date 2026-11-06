@@ -120,6 +120,26 @@ csdview serve <cocosstudio 資料夾>
 <kbd>Home</kbd>／<kbd>End</kbd> 跳到頭尾、<kbd>Esc</kbd> 取消選取。
 
 畫面上的「檢查」跟 `csdview doctor` 是同一個函式，結果逐欄位相同。
+問題分三級：✗ 錯誤、⚠ 警告、ℹ 提醒（Panel 底圖沒拉伸這類常是刻意的設計，只有提醒時標籤維持綠色）。
+
+### 全專案檢查
+
+左側檔案列表上方是**全專案檢查**：打開網頁就在背景把每個 `.csd` 跑一次檢查，
+每個檔名後面標上 ✗／⚠／ℹ 的數量，「顯示」可以切成只看有問題的檔。
+
+- 一條執行緒、一次一個檔、低優先權；你在看畫面時先讓你，網頁沒在看（分頁切走、關掉）超過 20 秒就暫停
+- 結果依檔案指紋存在 `~/.csdview_scan/`（`CSDVIEW_SCAN_DIR` 可改），下次開只重查有改過的檔
+- 只看 `.csd` 本身的指紋：貼圖換掉、被引用的 `.csd` 改過時按「全部重查」
+- 打開單一檔時那次的檢查結果也會同步到列表
+
+實測 Inanna 1,534 個檔：第一次 185 秒（平均 0.57 核、記憶體高峰 96 MB），
+期間打開別的檔畫面 0.6 秒就出來；之後重開 0.4 秒。
+
+### 時間軸上的關鍵影格
+
+選取有動畫的節點時，時間軸滑桿正下方會出現它的關鍵影格：一種屬性一列、一種顏色，
+小刻度是關鍵影格（點一下跳過去），淡線表示這段期間在變。巢狀 `.csd` 裡的節點跑的是
+那份檔自己的時間軸，格數對不上，所以只註明不畫。
 
 ### 不會拖慢電腦
 
@@ -190,7 +210,7 @@ JSON 預設是**緊湊輸出**——縮排對解析沒有幫助，但對 AI agen
 | `find` | 依名稱／類型搜尋節點並回報畫面座標 |
 | `spec` | 匯出節點規格 JSON，供移植後做結構化比對 |
 | `compare` | 與參考圖（Cocos Creator 截圖）比對差異 |
-| `doctor` | 檢查缺少的資源、過期版面、文字爆框、貼圖沒指向圖集、元件尺寸為 0 |
+| `doctor` | 檢查缺少的資源、過期版面、文字爆框、貼圖沒指向圖集、元件尺寸為 0；另列九宮格與 Panel 底圖的建議注意（不影響 `ok`） |
 | `list` | 列出資料夾底下所有 `.csd` |
 
 ```bash
@@ -203,6 +223,11 @@ csdview render Deal.csd --no-full-bounds       # 只畫設計區（預設會連�
 ```
 
 詳細用法與比對流程見 [AGENT_GUIDE.md](AGENT_GUIDE.md)。
+
+`doctor` 的 `ok` 只看原本五類（缺資源、過期版面、文字爆框、圖集、尺寸 0），意思跟以前一樣。
+後來加的三類放在 `scale9Mismatch`（九宮格編輯器數值跟引擎不一致）、`scale9Squeezed`
+（節點比兩角小）、`panelBackground`（Panel 底圖沒拉伸），合計數在 `advisories`，不影響 `ok`：
+csd MCP 的 agent 靠 `ok` 判斷改檔有沒有改壞，不能讓一堆原本通過的舊檔突然不通過。
 
 想讓某個專案裡的 agent 自動知道這個工具，把 [dropin/CLAUDE.md](dropin/CLAUDE.md)
 複製到該專案根目錄即可，見 [dropin/README.md](dropin/README.md)。
@@ -281,7 +306,8 @@ python tests/test_interop.py <某個 .csd>              # 幾個工具同時動�
 python tests/test_editor_checks.py                    # 建出來的檔 Cocos Studio 打不打得開
 python tests/test_multi_agent.py <某個專案的 .ccs>     # 多個 agent 同時用會不會互相弄壞
 python tests/test_ui_picker.py                        # 網頁介面的專案選單
-python tests/test_inspector.py                        # 屬性面板、檢查、預抓分道、裁切暫存層
+python tests/test_inspector.py                        # 屬性面板、檢查、預抓分道、裁切暫存層、九宮格
+python tests/test_scan.py                             # 全專案檢查：增量快取、暫停、讓出 CPU
 node   tests/test_watch.js                            # 網頁的自動更新行為
 ```
 

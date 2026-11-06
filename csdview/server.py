@@ -17,7 +17,7 @@ from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import anim, details, parser as csd_parser
+from . import anim, details, parser as csd_parser, scan
 from .assets import SKIP_DIRS, AssetLibrary, library_for
 from .render import NodeReport, RenderOptions, Renderer, RenderResult
 
@@ -111,6 +111,9 @@ class ViewerState:
         # 檢查（doctor）一次只跑一份；結果依檔案指紋快取，檔案沒改就不重算
         self._checks: OrderedDict[tuple, dict] = OrderedDict()
         self._check_lock = threading.Lock()
+        # 使用者正在看的那一格有幾張在算（不含預抓）；全專案檢查看到 > 0 就先讓
+        self._interactive = 0
+        self._scan: scan.ProjectScan | None = None
         self._files_cache: tuple[float, list[dict]] | None = None
         self._files_lock = threading.Lock()
         self._files_ttl = 2.0
@@ -178,6 +181,28 @@ class ViewerState:
     def render_slot(self):
         """限制同時進行的渲染數量。"""
         return self._render_slots
+
+    @contextlib.contextmanager
+    def interactive(self):
+        """標記「使用者正在等的那一格」正在算，全專案檢查會先讓它。"""
+        with self._lock:
+            self._interactive += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._interactive -= 1
+
+    def interactive_busy(self) -> bool:
+        with self._lock:
+            return self._interactive > 0
+
+    @property
+    def scan(self) -> "scan.ProjectScan":
+        with self._lock:
+            if self._scan is None:
+                self._scan = scan.ProjectScan(self)
+            return self._scan
 
     def prefetch_lane(self):
         """背景預抓多一道限制，見 __init__。"""
@@ -280,6 +305,7 @@ class ViewerState:
             self._checks[key] = summary
             while len(self._checks) > 16:
                 self._checks.popitem(last=False)
+        self.scan.record(full, summary, key[1])
         return summary
 
 
@@ -374,6 +400,17 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "/api/check":
                 full = self.state.resolve(query.get("file", ""))
                 self._json(self.state.check(full))
+            elif route == "/api/scan":
+                state = self.state.scan
+                if query.get("start") == "1" or query.get("rescan") == "1":
+                    state.start(force=query.get("rescan") == "1")
+                if "pause" in query:
+                    state.pause(query["pause"] == "1")
+                try:
+                    since = int(query.get("since", 0))
+                except ValueError:
+                    since = 0
+                self._json(state.poll(since))
             elif route == "/api/texture":
                 self._texture(query)
             elif route == "/api/reset":
@@ -544,7 +581,8 @@ class Handler(BaseHTTPRequestHandler):
         cached = self.state.cache.get(key)
         if cached is None:
             lane = self.state.prefetch_lane() if prefetch else contextlib.nullcontext()
-            with lane, self.state.render_slot():
+            busy = contextlib.nullcontext() if prefetch else self.state.interactive()
+            with busy, lane, self.state.render_slot():
                 cached = self.state.cache.get(key)      # 排隊期間可能已被別人算好
                 if cached is None:
                     doc = self.state.document(path)

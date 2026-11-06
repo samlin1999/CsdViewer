@@ -16,7 +16,7 @@ from PIL import Image
 from . import anim
 from .assets import AssetLibrary
 from .model import BlendFunc, Color, Document, FileRef, Node
-from .render import NodeReport, scale9_insets, scale9_slices
+from .render import NodeReport, editor_insets, scale9_insets, scale9_slices
 
 # ---------------------------------------------------------------- 對照表
 
@@ -439,8 +439,10 @@ def node_details(report: NodeReport, chain: list[NodeReport], library: AssetLibr
         sections.append({"title": "百分比版面", "rows": lay})
 
     # ---- 動畫
+    keyframes = None
     if doc is not None and node.action_tag:
         timelines = doc.timelines_by_tag().get(node.action_tag, [])
+        keyframes = _keyframe_tracks(timelines, nested=doc is not root_doc)
         frame = float(live.get("frame", 0))
         an = []
         for tl in timelines:
@@ -467,7 +469,34 @@ def node_details(report: NodeReport, chain: list[NodeReport], library: AssetLibr
            "raw": {"attrs": raw_attrs, "elements": node.elements}}
     if overlay:
         out["slice9"] = overlay
+    if keyframes:
+        out["keyframes"] = keyframes
     return out
+
+
+# 時間軸上每一種屬性一列；順序照設計者最常看的排
+_TRACK_ORDER = ["Position", "Scale", "RotationSkew", "Alpha", "CColor", "VisibleForFrame",
+                "FileData", "BlendFunc", "AnchorPoint", "ActionValue", "FrameEvent"]
+
+
+def _keyframe_tracks(timelines, nested: bool) -> dict | None:
+    """給網頁時間軸標記用：每條軌道的關鍵影格位置。
+
+    巢狀 .csd 的節點用的是它自己那份檔的時間軸，格數跟外層對不上，只告訴前端「是巢狀的」。
+    """
+    if not timelines:
+        return None
+    if nested:
+        return {"nested": True, "tracks": []}
+    tracks = []
+    for tl in sorted(timelines, key=lambda t: (_TRACK_ORDER.index(t.prop)
+                                               if t.prop in _TRACK_ORDER else 99, t.prop)):
+        track = {"prop": tl.prop, "label": PROP_LABELS.get(tl.prop, tl.prop),
+                 "frames": [kf.index for kf in tl.frames]}
+        if tl.prop in ("FrameEvent", "ActionValue", "VisibleForFrame", "FileData"):
+            track["values"] = [value_text(kf.value) for kf in tl.frames]
+        tracks.append(track)
+    return {"nested": False, "tracks": tracks}
 
 
 # ---------------------------------------------------------------- 九宮格
@@ -553,8 +582,8 @@ def _scale9_section(report: NodeReport, library: AssetLibrary) -> tuple[list[dic
                             note=f"引擎會把兩角各壓成一半（{_sides(drawn)}），中間不畫，"
                                  "圖案會被擠扁"))
 
-        editor = (node.cap_left, node.cap_right, node.cap_top, node.cap_bottom)
-        if node.scale9_rect is not None and any(editor) and \
+        editor = editor_insets(node)
+        if node.scale9_rect is not None and editor is not None and any(editor) and \
                 max(abs(a - b) for a, b in zip(editor, insets)) > 1.0:
             rows.append(row("編輯器的值", _sides(editor), status="warn",
                             note="跟上面不一致。這是 LeftEage／RightEage／TopEage／BottomEage，只有 Cocos Studio "
@@ -633,6 +662,15 @@ _KINDS = {
     "staleLayout": ("warn", "版面過期",
                     "百分比與存下來的數值對不上，多半是父層改過尺寸沒重算；"
                     "移植後位置會跟編輯器看到的不同。"),
+    "scale9Mismatch": ("warn", "九宮格的編輯器數值跟引擎不一致",
+                       "引擎只讀 Scale9OriginX/Y/Width/Height，LeftEage 那組只有編輯器自己用；"
+                       "兩組不同時，編輯器裡調的四角跟遊戲畫面對不上。這裡照引擎畫。"),
+    "scale9Squeezed": ("warn", "九宮格節點比兩角還小",
+                       "節點比「左＋右」或「上＋下」還小，引擎會把兩角各壓成一半，圖案被擠扁。"
+                       "寬度在執行時才撐開的進度條可以忽略。"),
+    "panelBackground": ("info", "Panel 底圖沒拉伸",
+                        "Panel 類容器的底圖沒開九宮格時，引擎照原尺寸擺在框正中央、不拉伸。"
+                        "如果本來想讓圖填滿框，要開九宮格；刻意置中的話可以忽略。"),
 }
 
 
@@ -686,6 +724,18 @@ def check_summary(payload: dict, reports: list[NodeReport]) -> dict:
                     f"{m['field']} 存 {num(m['stored'])}、百分比算出 {num(m['fromPercent'])}"
                     for m in entry["mismatches"])
                 items.append({"nodes": [entry["path"]], "text": entry["path"], "detail": detail})
+            elif key == "scale9Mismatch":
+                items.append({"nodes": [entry["path"]], "text": entry["path"],
+                              "detail": f"引擎 {_sides(entry['engine'])}；"
+                                        f"編輯器 {_sides(entry['editor'])}"})
+            elif key == "scale9Squeezed":
+                items.append({"nodes": [entry["path"]], "text": entry["path"],
+                              "detail": f"節點 {pair(entry['size'], ' × ')}，"
+                                        f"四角 {_sides(entry['insets'])}"})
+            elif key == "panelBackground":
+                items.append({"nodes": [entry["path"]], "text": entry["path"],
+                              "detail": f"框 {pair(entry['size'], ' × ')}，"
+                                        f"圖 {pair(entry['imageSize'], ' × ')}"})
         if items:
             groups.append({"kind": key, "level": level, "title": title, "hint": hint,
                            "items": items})
@@ -702,6 +752,7 @@ def check_summary(payload: dict, reports: list[NodeReport]) -> dict:
         "ok": payload.get("ok", False),
         "errors": sum(len(g["items"]) for g in groups if g["level"] == "error"),
         "warnings": sum(len(g["items"]) for g in groups if g["level"] == "warn"),
+        "infos": sum(len(g["items"]) for g in groups if g["level"] == "info"),
         "groups": groups,
         "byNode": by_node,
         "framesProbed": payload.get("framesProbed", []),

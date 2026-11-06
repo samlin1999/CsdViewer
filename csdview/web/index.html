@@ -40,6 +40,18 @@
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .file:hover { background: var(--panel-2); }
   .file.active { background: var(--accent-dim); color: #fff; }
+  .file .fb { float: right; margin-left: 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .file .fb span + span { margin-left: 4px; }
+  .file.active .fb span { color: #fff; }
+  .scanbar { margin: 0 10px 6px; padding: 7px 9px; border-radius: 6px; background: var(--panel-2);
+             border: 1px solid var(--line); font-size: 12px; line-height: 1.5; }
+  .scanbar .line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .scanbar .prog { height: 3px; background: var(--line); border-radius: 2px; margin: 5px 0 4px; overflow: hidden; }
+  .scanbar .prog > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  .scanbar .counts span { margin-right: 8px; white-space: nowrap; }
+  .scanbar button { padding: 1px 8px; font-size: 11px; }
+  .scanbar select { padding: 2px 4px; font-size: 12px; }
+  .scanbar .sub { color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* 中間：上方資訊列 + 舞台 */
   #center { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
@@ -150,6 +162,7 @@
   .issues { border: 1px solid #7a3434; background: #2c1a1a; border-radius: 6px;
             padding: 6px 9px; margin: 2px 0 8px; display: flex; flex-direction: column; gap: 3px; }
   .issues.warnonly { border-color: #7a5a2a; background: #2c2417; }
+  .issues.infoonly { border-color: #2f4d7a; background: #18223a; }
   details.sec { border-top: 1px solid var(--line); }
   details.sec > summary { cursor: pointer; padding: 6px 0 5px; color: var(--muted); font-size: 11px;
                           font-weight: 600; letter-spacing: .05em; list-style: none; user-select: none; }
@@ -170,6 +183,7 @@
           color: var(--anim); margin-left: 6px; white-space: nowrap; }
   .st-ok { color: var(--ok); } .st-missing, .st-error { color: var(--err); }
   .st-warn { color: var(--warn); } .st-default { color: var(--muted); }
+  .st-info { color: #8fb8ff; }
   .raw { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; padding-bottom: 10px; }
   .raw .k { color: var(--muted); }
   .raw .v { word-break: break-all; }
@@ -188,7 +202,19 @@
   label.check { display: inline-flex; align-items: center; gap: 5px;
                 color: var(--muted); cursor: pointer; user-select: none; }
   input[type=number] { width: 74px; }
-  #timeline { flex: 1; min-width: 200px; accent-color: var(--accent); height: 22px; }
+  #tlwrap { flex: 1; min-width: 200px; position: relative; }
+  #timeline { width: 100%; accent-color: var(--accent); height: 22px; display: block; margin: 0; }
+  /* 選取節點的關鍵影格：滑桿正下方，一種屬性一列。滑桿的圓鈕寬約 16px，
+     所以第 0 格在 8px、最後一格在「寬度 - 8px」，刻度照同一個比例擺才會對齊 */
+  #tlmarks { position: relative; height: 0; margin: 0 8px; }
+  #tlmarks .lane { position: absolute; left: 0; right: 0; height: 4px; }
+  #tlmarks .span { position: absolute; top: 1px; height: 2px; opacity: .35; }
+  #tlmarks .tk { position: absolute; top: -1px; width: 4px; height: 6px; margin-left: -2px;
+                 border-radius: 1px; cursor: pointer; }
+  #tlmarks .tk:hover { transform: scaleY(1.6); }
+  #markInfo { display: inline-flex; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+  #markInfo .lg { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  #markInfo .lg i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
   .stat { color: var(--muted); font-variant-numeric: tabular-nums; }
   .warn { color: var(--warn); }
   kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-width: 2px;
@@ -199,6 +225,20 @@
 
 <div class="panel">
   <h2>檔案</h2>
+  <div class="scanbar" id="scanBar">
+    <div class="line"><b id="scanTitle">全專案檢查</b><span class="spacer"></span>
+      <button id="scanPause" title="暫停／繼續背景檢查">暫停</button>
+      <button id="scanRescan" title="不管有沒有改過，全部重新檢查（貼圖換過、規則更新時用）">全部重查</button></div>
+    <div class="prog"><div id="scanProg"></div></div>
+    <div class="counts" id="scanCounts">準備中…</div>
+    <div class="sub" id="scanSub"></div>
+    <div class="line" style="margin-top:4px">顯示
+      <select id="fileFilter">
+        <option value="all">全部檔案</option>
+        <option value="issues">有錯誤或警告的</option>
+        <option value="errors">只看有錯誤的</option>
+      </select></div>
+  </div>
   <input id="search" placeholder="篩選檔名…" autocomplete="off">
   <div id="files"></div>
 </div>
@@ -244,11 +284,15 @@
   <div class="row">
     <button id="play" class="primary" disabled>▶ 播放</button>
     <select id="anim" disabled></select>
-    <input type="range" id="timeline" min="0" max="0" value="0" step="1" disabled>
+    <div id="tlwrap">
+      <input type="range" id="timeline" min="0" max="0" value="0" step="1" disabled>
+      <div id="tlmarks"></div>
+    </div>
     <input type="number" id="frameNum" value="0" min="0" step="1" disabled>
     <span class="stat" id="frameInfo">—</span>
     <span class="stat" id="prefetchInfo"></span>
   </div>
+  <div class="row" id="markRow" hidden><span id="markInfo"></span></div>
   <div class="row">
     <label class="check"><input type="checkbox" id="annotate"> 標註節點</label>
     <label class="check"><input type="checkbox" id="particles" checked> 粒子標示</label>
@@ -314,6 +358,8 @@ const state = {
   // 最後一次載入的節點樹：flat 是前序（後面的畫在上面），byId 查節點與它的那一列
   flat: [], byId: new Map(), byPath: new Map(), treeFresh: true, imageSize: null,
   sel: null, hover: null, lastClick: null,
+  // 檔案列表的列（路徑 -> 元素）與全專案檢查的結果（路徑 -> {e, w, i}）
+  fileRows: new Map(), scanResults: {},
   // 選取節點的九宮格切線（屬性面板載入時一起拿到）
   selSlice: null,
   check: null,
@@ -334,6 +380,7 @@ function visParams() {
 // ---------------------------------------------------------------- 檔案列表
 async function loadFiles(fresh) {
   const q = fresh ? "?fresh=1" : "";
+  const rows = new Map();
   const data = await fetch("/api/files" + q).then(r => r.json());
   const byDir = new Map();
   for (const f of data.files) {
@@ -350,28 +397,123 @@ async function loadFiles(fresh) {
     for (const f of items) {
       const row = document.createElement("div");
       row.className = "file";
-      row.textContent = f.name;
+      row.innerHTML = `<span class="fb"></span>${escapeHTML(f.name)}`;
       row.title = f.path;
       row.dataset.path = f.path;
       if (state.file && f.path === state.file) row.className += " active";
       row.onclick = () => selectFile(f.path, row);
       box.appendChild(row);
+      rows.set(f.path, row);
     }
   }
-  const needle = (el("search").value || "").toLowerCase();
-  if (needle) {
-    for (const row of document.querySelectorAll("#files .file")) {
-      row.style.display = row.dataset.path.toLowerCase().includes(needle) ? "" : "none";
-    }
-  }
+  state.fileRows = rows;
+  for (const path of rows.keys()) markFileRow(path);
+  applyFileFilter();
   if (!state.file) el("status").textContent = `${data.files.length} 個檔案`;
 }
 
-el("search").oninput = (e) => {
-  const needle = e.target.value.toLowerCase();
-  for (const row of document.querySelectorAll("#files .file")) {
-    row.style.display = row.dataset.path.toLowerCase().includes(needle) ? "" : "none";
+// 檔名搜尋＋「只看有問題的」一起套；整組都沒有符合的資料夾標題也藏起來
+function applyFileFilter() {
+  const needle = (el("search").value || "").toLowerCase();
+  const mode = el("fileFilter").value || "all";
+  let header = null, shown = 0;
+  const finish = () => { if (header) header.style.display = shown ? "" : "none"; };
+  for (const node of el("files").children || []) {
+    if (node.classList.contains("group")) { finish(); header = node; shown = 0; continue; }
+    const path = node.dataset.path || "";
+    const r = state.scanResults[path];
+    let ok = !needle || path.toLowerCase().includes(needle);
+    if (ok && mode === "issues") ok = !!r && (r.e > 0 || r.w > 0);
+    if (ok && mode === "errors") ok = !!r && r.e > 0;
+    if (state.file === path) ok = true;          // 正在看的檔永遠留著
+    node.style.display = ok ? "" : "none";
+    if (ok) shown++;
   }
+  finish();
+}
+
+el("search").oninput = applyFileFilter;
+el("fileFilter").onchange = applyFileFilter;
+
+// ---------------------------------------------------------------- 全專案檢查
+// 伺服器在背景一次查一個檔（低優先權、使用者在看畫面時先讓、網頁沒在看就停），
+// 這裡只負責每隔幾秒拿「上次之後有變的」結果，把檔案列表的標記補上。
+let scanSeq = 0, scanStarted = false;
+
+function markFileRow(path) {
+  const row = state.fileRows.get(path);
+  const badge = row && row.querySelector ? row.querySelector(".fb") : null;
+  if (!badge) return;
+  const r = state.scanResults[path];
+  if (!r) { badge.innerHTML = ""; badge.title = ""; return; }
+  const parts = [];
+  if (r.e) parts.push(`<span class="st-error">✗${r.e}</span>`);
+  if (r.w) parts.push(`<span class="st-warn">⚠${r.w}</span>`);
+  if (r.i && !r.e && !r.w) parts.push(`<span class="st-info">ℹ${r.i}</span>`);
+  badge.innerHTML = parts.join("");
+  badge.title = r.error ? `打不開：${r.error}`
+    : [r.e && `${r.e} 個錯誤`, r.w && `${r.w} 個警告`, r.i && `${r.i} 個提醒`].filter(Boolean).join("、");
+}
+
+async function pollScan() {
+  if (document.hidden) return;
+  let data = null;
+  try {
+    const q = new URLSearchParams({ since: String(scanSeq) });
+    if (!scanStarted) q.set("start", "1");
+    data = await fetch("/api/scan?" + q).then(r => r.json());
+  } catch { data = null; }
+  if (!data || data.status === undefined) return;
+  scanStarted = true;
+  scanSeq = data.seq;
+  let changed = false;
+  for (const [path, r] of Object.entries(data.results || {})) {
+    state.scanResults[path] = r;
+    markFileRow(path);
+    changed = true;
+  }
+  if (changed) applyFileFilter();
+  showScan(data);
+}
+
+function showScan(data) {
+  const results = Object.values(state.scanResults);
+  const withErr = results.filter(r => r.e > 0).length;
+  const withWarn = results.filter(r => !r.e && r.w > 0).length;
+  const clean = results.filter(r => !r.e && !r.w).length;
+  const pct = data.total ? Math.round(data.done / data.total * 100) : 0;
+  el("scanProg").style.width = (data.status === "done" ? 100 : pct) + "%";
+  el("scanCounts").innerHTML =
+    `<span class="st-error" title="有錯誤的檔">✗ ${withErr} 個檔</span>` +
+    `<span class="st-warn" title="只有警告的檔">⚠ ${withWarn} 個檔</span>` +
+    `<span class="st-ok" title="沒有錯誤也沒有警告的檔">✓ ${clean}</span>`;
+  const title = el("scanTitle"), sub = el("scanSub"), pause = el("scanPause");
+  pause.textContent = data.userPaused ? "繼續" : "暫停";
+  pause.disabled = data.status === "done";
+  if (data.status === "done") {
+    title.textContent = "全專案檢查完成";
+    sub.textContent = `${data.total} 個檔 · 這趟 ${data.seconds} 秒（沒改過的檔沿用上次結果）`;
+  } else if (data.status === "paused") {
+    title.textContent = data.userPaused ? "全專案檢查（已暫停）" : "全專案檢查（等待中）";
+    sub.textContent = `${data.done} / ${data.total}`;
+  } else if (data.status === "running") {
+    title.textContent = `全專案檢查 ${data.done} / ${data.total}`;
+    sub.textContent = data.current ? `正在查 ${data.current}` : "";
+  } else {
+    title.textContent = "全專案檢查";
+    sub.textContent = "";
+  }
+  sub.title = "背景一次查一個檔、優先權低於其他程式；你在看畫面時先讓你，網頁沒在看就暫停";
+}
+
+el("scanPause").onclick = async () => {
+  const pausing = el("scanPause").textContent === "暫停";
+  await fetch("/api/scan?pause=" + (pausing ? "1" : "0")).catch(() => null);
+  pollScan();
+};
+el("scanRescan").onclick = async () => {
+  await fetch("/api/scan?rescan=1").catch(() => null);
+  pollScan();
 };
 
 // ---------------------------------------------------------------- 選檔
@@ -401,7 +543,8 @@ async function selectFile(path, row) {
   state.file = path;
   state.vis.clear();
   state.flat = []; state.byId = new Map(); state.byPath = new Map();
-  state.treeFresh = true; state.sel = null; state.selSlice = null;
+  state.treeFresh = true; state.sel = null; state.selSlice = null; state.keyframes = null;
+  renderMarks();
   state.hover = null; state.check = null;
   el("visReset").disabled = true;
   el("visReset").textContent = "重設可視";
@@ -450,6 +593,7 @@ function applyAnim() {
 
   cancelPrefetch();
   setFrame(state.start);
+  renderMarks();          // 換了動畫片段，刻度要照新的起訖重擺
 }
 
 // ---------------------------------------------------------------- 影格
@@ -894,6 +1038,7 @@ function selectNode(id, reveal) {
   if (!entry) return;
   state.sel = { id, path: entry.node.path };
   if (state.selSlice && state.selSlice.id !== id) state.selSlice = null;
+  if (state.keyframes && state.keyframes.id !== id) { state.keyframes = null; renderMarks(); }
   markSelectedRow();
   if (reveal) {
     for (let p = entry.parentId; p >= 0; p = state.byId.get(p).parentId) expand(state.byId.get(p));
@@ -908,6 +1053,8 @@ function selectNode(id, reveal) {
 function clearSelection(reason) {
   state.sel = null;
   state.selSlice = null;
+  state.keyframes = null;
+  renderMarks();
   markSelectedRow();
   updateSelChip();
   drawOverlay();
@@ -1047,6 +1194,67 @@ function locateSelection() {
   });
 }
 
+// ---------------------------------------------------------------- 時間軸上的關鍵影格
+// 選取節點的每一種動畫屬性一列：小刻度是關鍵影格（點一下跳過去），淡線是這段期間在變。
+const TRACK_COLORS = {
+  Position: "#4ea1ff", Scale: "#6ee7a0", RotationSkew: "#ffb454", Alpha: "#c9b6ff",
+  CColor: "#ff7bd5", VisibleForFrame: "#ff7b7b", FileData: "#ffe066", BlendFunc: "#7fd1d1",
+  AnchorPoint: "#a0a6b4", ActionValue: "#9aa0ad", FrameEvent: "#ffffff",
+};
+const LANE_H = 6;
+
+function renderMarks() {
+  const box = el("tlmarks"), info = el("markInfo"), rowBox = el("markRow");
+  const k = state.sel && state.keyframes && state.keyframes.id === state.sel.id ? state.keyframes : null;
+  box.innerHTML = "";
+  box.style.height = "0px";
+  if (!k) { rowBox.hidden = true; info.innerHTML = ""; return; }
+  rowBox.hidden = false;
+  if (k.nested) {
+    info.textContent = "選取的節點在巢狀 .csd 裡，它的動畫跑的是那份檔自己的時間軸，這條時間軸上不標。";
+    return;
+  }
+  const start = state.start, end = state.end, span = end - start;
+  const pos = (f) => (span > 0 ? (f - start) / span * 100 : 0) + "%";
+  let lanes = 0, outside = 0;
+  const legend = [];
+  for (const t of k.tracks) {
+    const color = TRACK_COLORS[t.prop] || "#9aa0ad";
+    const inside = t.frames.map((f, i) => [f, i]).filter(([f]) => f >= start && f <= end);
+    outside += t.frames.length - inside.length;
+    legend.push(`<span class="lg"><i style="background:${color}"></i>${escapeHTML(t.label)} ${t.frames.length}</span>`);
+    if (!inside.length || span <= 0) continue;
+    const lane = document.createElement("div");
+    lane.className = "lane";
+    lane.style.top = (lanes * LANE_H + 2) + "px";
+    const first = inside[0][0], last = inside[inside.length - 1][0];
+    if (last > first) {
+      const bar = document.createElement("div");
+      bar.className = "span";
+      bar.style.left = pos(first);
+      bar.style.width = ((last - first) / span * 100) + "%";
+      bar.style.background = color;
+      lane.appendChild(bar);
+    }
+    for (const [f, i] of inside) {
+      const tick = document.createElement("span");
+      tick.className = "tk";
+      tick.style.left = pos(f);
+      tick.style.background = color;
+      const value = t.values ? `：${t.values[i]}` : "";
+      tick.title = `${t.label} · 第 ${f} 格${value}（點一下跳過去）`;
+      tick.onclick = () => { stopPlay(); setFrame(f); };
+      lane.appendChild(tick);
+    }
+    box.appendChild(lane);
+    lanes++;
+  }
+  box.style.height = (lanes * LANE_H + 4) + "px";
+  const name = state.byId.get(state.sel.id);
+  info.innerHTML = `<span>${escapeHTML(name ? name.node.name : "")} 的關鍵影格：</span>` + legend.join("") +
+    (outside ? `<span>（另有 ${outside} 個不在目前這段動畫的範圍）</span>` : "");
+}
+
 // ---------------------------------------------------------------- 屬性面板
 function showInspectorHint(reason) {
   el("inspector").innerHTML = `<div class="hint">${reason ? `<span class="warn">${escapeHTML(reason)}</span><br>` : ""}` +
@@ -1069,11 +1277,13 @@ async function loadInspector() {
     return;
   }
   state.selSlice = data.slice9 ? { id: state.sel.id, ...data.slice9 } : null;
+  state.keyframes = data.keyframes ? { id: state.sel.id, ...data.keyframes } : null;
   renderInspector(data);
   drawOverlay();
+  renderMarks();
 }
 
-const STATUS_ICON = { ok: "✓", missing: "✗", error: "✗", warn: "⚠", default: "◇" };
+const STATUS_ICON = { ok: "✓", missing: "✗", error: "✗", warn: "⚠", default: "◇", info: "ℹ" };
 const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 
 // 九宮格預覽：貼圖照比例縮放（最寬 240、不超過面板寬、最高 140、最多放大 4 倍），
@@ -1137,7 +1347,8 @@ function renderInspector(d) {
     `<button id="btnCopy" title="複製節點路徑，可以貼給 AI 或 csdview 指令">複製路徑</button></div></div>`;
   if (issues.length) {
     const onlyWarn = issues.every(i => i.level !== "error");
-    html += `<div class="issues${onlyWarn ? " warnonly" : ""}">` + issues.map(i =>
+    const onlyInfo = issues.every(i => i.level === "info");
+    html += `<div class="issues${onlyInfo ? " infoonly" : onlyWarn ? " warnonly" : ""}">` + issues.map(i =>
       `<div class="st-${i.level}">${STATUS_ICON[i.level] || "⚠"} <b>${escapeHTML(i.title)}</b>` +
       `　<span class="mono">${escapeHTML(i.detail)}</span></div>`).join("") + "</div>";
   }
@@ -1208,14 +1419,17 @@ function setCheckChip(kind, message) {
     chip.title = "在背景檢查缺少的資源、圖集、尺寸、文字爆框與版面，不會擋住畫面";
   } else if (kind === "ok") {
     chip.className = "chip ok"; chip.textContent = "✓ 檢查通過";
-    chip.title = "缺少的資源、圖集設定、尺寸 0 的元件、文字超出框、版面過期：都沒有問題\n" +
+    chip.title = "缺少的資源、圖集設定、尺寸 0 的元件、文字超出框、版面過期、九宮格：都沒有問題\n" +
       `（檢查了第 ${c.framesProbed.join("、")} 格，結果同 csdview doctor）`;
   } else if (kind === "issues") {
     const parts = [];
     if (c.errors) parts.push(`✗ ${c.errors} 個錯誤`);
     if (c.warnings) parts.push(`⚠ ${c.warnings} 個警告`);
-    chip.className = "chip click " + (c.errors ? "err" : "warn");
-    chip.textContent = parts.join("　") + "　▾";
+    if (c.infos) parts.push(`ℹ ${c.infos} 個提醒`);
+    // 只有提醒時維持綠色（提醒常是刻意的設計），但可以點開看
+    const onlyInfo = !c.errors && !c.warnings;
+    chip.className = "chip click " + (c.errors ? "err" : onlyInfo ? "ok" : "warn");
+    chip.textContent = (onlyInfo ? "✓ 檢查通過　" : "") + parts.join("　") + "　▾";
     chip.title = "點一下看是哪些節點";
     chip.onclick = () => { el("checkPanel").hidden = !el("checkPanel").hidden; };
   } else {
@@ -1262,9 +1476,10 @@ function markIssueRows() {
   for (const e of state.flat) {
     const list = byNode[e.node.path];
     if (!list || !list.length) { e.issue.textContent = ""; continue; }
-    const bad = list.some(i => i.level === "error");
-    e.issue.textContent = bad ? "✗" : "⚠";
-    e.issue.className = "issue " + (bad ? "st-error" : "st-warn");
+    const level = list.some(i => i.level === "error") ? "error"
+      : list.some(i => i.level === "warn") ? "warn" : "info";
+    e.issue.textContent = STATUS_ICON[level];
+    e.issue.className = "issue st-" + level;
     e.issue.title = list.map(i => i.title).join("\n");
   }
 }
@@ -1432,8 +1647,9 @@ document.onkeydown = (e) => {
   }
 };
 
-loadFiles();
+loadFiles().then(pollScan);
 setInterval(() => { if (!document.hidden) loadFiles(); }, 15000);
+setInterval(pollScan, 2500);
 </script>
 </body>
 </html>

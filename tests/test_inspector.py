@@ -145,6 +145,25 @@ MAIN = """<GameFile>
 """
 
 
+ADVISORY = """<GameFile>
+  <PropertyGroup Name="Advisory" Type="Layer" Version="3.10.0.0" />
+  <Content ctype="GameProjectContent"><Content>
+    <Animation Duration="0" Speed="1.0000" />
+    <ObjectData Name="Layer" Tag="1" ctype="GameLayerObjectData">
+      <Size X="100" Y="100" />
+      <Children>
+        <AbstractNodeData Name="squeezed" ActionTag="1" Tag="2" ctype="ImageViewObjectData"
+            Scale9Enable="True" Scale9OriginX="10" Scale9OriginY="10" Scale9Width="10" Scale9Height="10">
+          <Size X="12" Y="30" /><Position X="10" Y="10" />
+          <FileData Type="Normal" Path="bands.png" Plist="" />
+        </AbstractNodeData>
+      </Children>
+    </ObjectData>
+  </Content></Content>
+</GameFile>
+"""
+
+
 def build_project() -> str:
     root = os.path.join(tempfile.mkdtemp(prefix="csdview_insp_"), "cocosstudio")
     os.makedirs(root)
@@ -157,7 +176,7 @@ def build_project() -> str:
     bands.save(os.path.join(root, "bands.png"))
     # 專案外的一張圖：貼圖 API 不能讀到它
     Image.new("RGBA", (4, 4), (1, 2, 3, 255)).save(os.path.join(os.path.dirname(root), "outside.png"))
-    for name, text in (("Main.csd", MAIN), ("Inner.csd", INNER)):
+    for name, text in (("Main.csd", MAIN), ("Inner.csd", INNER), ("Advisory.csd", ADVISORY)):
         with open(os.path.join(root, name), "w", encoding="utf-8") as fh:
             fh.write(text)
     return root
@@ -221,6 +240,9 @@ def main() -> int:
         pos = rows_of(moving).get("位置與大小/位置", {})
         check("動畫改過的值：顯示這一格的，附上 .csd 原值",
               pos.get("v") == "60, 40" and pos.get("anim") and pos.get("base") == "40, 40", pos)
+        check("時間軸標記：回傳這個節點的關鍵影格",
+              moving.get("keyframes", {}).get("tracks") == [
+                  {"prop": "Position", "label": "位置", "frames": [0, 20]}], moving.get("keyframes"))
         anim_rows = [s for s in moving["sections"] if s["title"].startswith("動畫")]
         check("動畫分區列出軌道", bool(anim_rows) and anim_rows[0]["rows"][0]["k"] == "位置")
 
@@ -267,6 +289,23 @@ def main() -> int:
               and all(i["text"] != "nowhere/pressed.png"
                       for g in chk["groups"] for i in g["items"]))
         check("版面過期對到 stale 節點", "Layer/stale" in chk["byNode"])
+        check("doctor：九宮格編輯器數值不一致",
+              [e["path"] for e in payload["scale9Mismatch"]] == ["Layer/s9mismatch"],
+              payload["scale9Mismatch"])
+        check("doctor：九宮格節點比兩角小",
+              [e["path"] for e in payload["scale9Squeezed"]] == ["Layer/s9squeeze"],
+              payload["scale9Squeezed"])
+        check("doctor：Panel 底圖沒拉伸（提醒）",
+              [e["path"] for e in payload["panelBackground"]] == ["Layer/bgPanel"],
+              payload["panelBackground"])
+        check("網頁檢查：Panel 底圖算提醒、九宮格算警告",
+              any(g["kind"] == "panelBackground" and g["level"] == "info" for g in chk["groups"])
+              and any(g["kind"] == "scale9Squeezed" and g["level"] == "warn" for g in chk["groups"]))
+        adv_full = os.path.join(root, "Advisory.csd")
+        adv, _l = diagnose(parser.parse(adv_full),
+                           Renderer(library_for(adv_full), RenderOptions(layout_only=True)))
+        check("新的三類不影響 ok（csd MCP 的 agent 靠 ok 判斷有沒有改壞）",
+              adv["ok"] is True and adv["advisories"] == 1, adv)
         t0 = time.perf_counter()
         get_json("/api/check", file="Main.csd")
         again_ms = (time.perf_counter() - t0) * 1000

@@ -308,6 +308,27 @@ def scale9_insets(node: Node, tex_w: float, tex_h: float) -> tuple[float, float,
     return x1, tex_w - x1 - mid_w, y1, tex_h - y1 - mid_h
 
 
+_EDITOR_KEYS = ("LeftEage", "RightEage", "TopEage", "BottomEage")
+
+
+def editor_insets(node: Node) -> tuple[float, float, float, float] | None:
+    """.csd 裡真的寫了的 LeftEage/RightEage/TopEage/BottomEage；四個沒寫齊就是 None。
+
+    不能用 node.cap_*：解析時缺 LeftEage 會拿 Scale9OriginX 補、缺 RightEage 補 0，
+    那是補出來的值，拿來跟引擎比會報出根本不存在的「不一致」。
+    """
+    values = []
+    for key in _EDITOR_KEYS:
+        raw = node.attrs.get(key)
+        if raw is None or raw == "":
+            return None
+        try:
+            values.append(float(raw))
+        except ValueError:
+            return None
+    return tuple(values)
+
+
 def scale9_slices(insets: tuple[float, float, float, float],
                   dst_w: float, dst_h: float) -> tuple[float, float, float, float]:
     """九宮格畫到 dst_w x dst_h 時，四角實際佔多大 (左, 右, 上, 下)。

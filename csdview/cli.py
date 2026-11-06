@@ -17,7 +17,8 @@ from . import anim, parser as csd_parser
 from .assets import SKIP_DIRS, atlas_map, library_for
 from .locking import LockTimeout, ReplaceBusy, file_lock, replace_with_retry
 from .model import Document
-from .render import RenderOptions, Renderer, RenderResult
+from .render import (_LAYOUT_TYPES, RenderOptions, Renderer, RenderResult, editor_insets,
+                     scale9_insets)
 
 
 # ---------------------------------------------------------------- 共用
@@ -931,6 +932,56 @@ def _atlas_mismatch(csd_path: str, root: str) -> list[dict]:
                     "expectedPlist": want})
     return out
 
+_SCALE9_IMAGE_FROM_NORMAL = frozenset({"ButtonObjectData", "LoadingBarObjectData",
+                                       "SliderObjectData"})
+
+
+def _scale9_checks(doc: Document, result: RenderResult,
+                   assets) -> tuple[list[dict], list[dict], list[dict]]:
+    """九宮格與 Panel 底圖：(編輯器數值不一致, 節點比兩角小, Panel 底圖沒拉伸)。
+
+    三類都是「csdview 照引擎畫得出來，但跟設計者在編輯器裡以為的不一樣」：
+    - 引擎只讀 Scale9OriginX/Y/Width/Height，LeftEage 那組只有編輯器自己用，兩組不同時
+      編輯器裡調的四角跟遊戲畫面對不上（兩個專案 2950 個九宮格節點裡有 141 個）；
+    - 節點比「左＋右」或「上＋下」還小時，引擎把兩角各壓成一半，圖案會被擠扁；
+    - Panel 類容器的底圖沒開九宮格時照原尺寸置中、不拉伸，框比圖大就留白。
+    只看這份檔自己的節點：巢狀引用的 .csd 在它自己的檔裡檢查，免得同一個問題報好幾次。
+    """
+    mismatch, squeezed, panel_bg = [], [], []
+    for report in result.nodes:
+        node = report.node
+        if node is None or report.owner is not doc:
+            continue
+        ref = node.normal_file if node.ctype in _SCALE9_IMAGE_FROM_NORMAL else node.file
+        if not ref or not ref.path or ref.type == "Default":
+            continue
+        is_layout = node.ctype in _LAYOUT_TYPES
+        if not node.scale9 and not is_layout:
+            continue
+        image = assets.image(ref)
+        if image is None:
+            continue                       # 缺圖由 missingAssets 報
+        tex_w, tex_h = image.size
+        if not node.scale9:
+            if node.width > 0 and node.height > 0 and (tex_w, tex_h) != (node.width, node.height):
+                panel_bg.append({"path": report.path, "type": node.ctype.replace("ObjectData", ""),
+                                 "size": [node.width, node.height], "image": ref.path,
+                                 "imageSize": [tex_w, tex_h]})
+            continue
+        insets = scale9_insets(node, tex_w, tex_h)
+        rounded = [round(v, 1) for v in insets]
+        editor = editor_insets(node)
+        if (node.scale9_rect is not None and editor is not None and any(editor)
+                and max(abs(a - b) for a, b in zip(editor, insets)) > 1.0):
+            mismatch.append({"path": report.path, "image": ref.path, "imageSize": [tex_w, tex_h],
+                             "engine": rounded, "editor": [round(v, 1) for v in editor]})
+        if node.width > 0 and node.height > 0 and (
+                node.width < insets[0] + insets[1] or node.height < insets[2] + insets[3]):
+            squeezed.append({"path": report.path, "size": [node.width, node.height],
+                             "insets": rounded, "image": ref.path})
+    return mismatch, squeezed, panel_bg
+
+
 def diagnose(doc: Document, renderer: Renderer,
              visibility: "dict[str, bool] | None" = None) -> tuple[dict, RenderResult]:
     """doctor 的全部檢查，回傳 (payload, 最後一格的 layout 結果)。
@@ -953,12 +1004,18 @@ def diagnose(doc: Document, renderer: Renderer,
     ]
     atlas = _atlas_mismatch(doc.path, renderer.assets.root)
     zero = _zero_size_widgets(doc.path)
+    s9_mismatch, s9_squeezed, panel_bg = _scale9_checks(doc, last, renderer.assets)
     payload = {
         "file": doc.path, "projectRoot": renderer.assets.root,
         "framesProbed": probes, "missingAssets": missing,
         "staleLayout": stale, "textOverflow": overflow,
         "atlasMismatch": atlas, "zeroSize": zero,
+        # ok 只看上面五類，意思跟以前一樣：後來加的三類是「建議注意」，
+        # 不能讓一堆原本通過的舊檔突然變成不通過（csd MCP 的 agent 會拿 ok 判斷改檔有沒有改壞）。
         "ok": not missing and not stale and not overflow and not atlas and not zero,
+        "scale9Mismatch": s9_mismatch, "scale9Squeezed": s9_squeezed,
+        "panelBackground": panel_bg,
+        "advisories": len(s9_mismatch) + len(s9_squeezed) + len(panel_bg),
     }
     return payload, last
 
@@ -975,6 +1032,8 @@ def cmd_doctor(args) -> int:
     overflow, atlas, zero = (payload["textOverflow"], payload["atlasMismatch"],
                              payload["zeroSize"])
     probes = payload["framesProbed"]
+    s9_mismatch, s9_squeezed = payload["scale9Mismatch"], payload["scale9Squeezed"]
+    panel_bg = payload["panelBackground"]
     lines = [f"專案根目錄: {renderer.assets.root}",
              f"檢查影格  : {probes}"]
     if missing:
@@ -1007,6 +1066,30 @@ def cmd_doctor(args) -> int:
                 f"{m['field']} 存 {m['stored']:g} 但百分比算出 {m['fromPercent']:g}"
                 for m in item["mismatches"])
             lines.append(f"    {item['path']}  {detail}")
+
+    def sides(v) -> str:
+        return "/".join(f"{x:g}" for x in v)
+
+    if s9_mismatch or s9_squeezed or panel_bg:
+        lines += ["", f"建議注意 {payload['advisories']} 項（不影響 ok）:"]
+    if s9_mismatch:
+        lines += [f"  九宮格的編輯器數值跟引擎不一致 {len(s9_mismatch)} 個"
+                  "（引擎只讀 Scale9*，編輯器裡調的四角跟遊戲畫面會對不上）:"]
+        for item in s9_mismatch:
+            lines.append(f"    {item['path']}  引擎 左右上下 {sides(item['engine'])}"
+                         f"  編輯器 LeftEage… {sides(item['editor'])}")
+    if s9_squeezed:
+        lines += [f"  九宮格節點比兩角加起來還小 {len(s9_squeezed)} 個"
+                  "（引擎把兩角各壓成一半，圖案被擠扁；執行時才撐開的進度條可忽略）:"]
+        for item in s9_squeezed:
+            lines.append(f"    {item['path']}  節點 {item['size'][0]:g}x{item['size'][1]:g}"
+                         f"  四角 左右上下 {sides(item['insets'])}")
+    if panel_bg:
+        lines += [f"  Panel 底圖沒開九宮格、大小跟框不同 {len(panel_bg)} 個"
+                  "（引擎照原尺寸置中、不拉伸；要填滿框得開九宮格）:"]
+        for item in panel_bg:
+            lines.append(f"    {item['path']}  框 {item['size'][0]:g}x{item['size'][1]:g}"
+                         f"  圖 {item['imageSize'][0]}x{item['imageSize'][1]}  {item['image']}")
     _emit(payload, args.json, lines, args.pretty)
     return 0
 
