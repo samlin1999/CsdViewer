@@ -129,6 +129,10 @@ MAIN = """<GameFile>
           <Size X="60" Y="30" /><Position X="90" Y="120" />
           <FileData Type="Normal" Path="bands.png" Plist="" />
         </AbstractNodeData>
+        <AbstractNodeData Name="expired" ActionTag="117" Tag="18" ctype="TextObjectData"
+            FontSize="20" LabelText="(已過期)" IsCustomSize="True">
+          <Size X="73" Y="30" /><Position X="10" Y="60" />
+        </AbstractNodeData>
         <AbstractNodeData Name="offscreen" ActionTag="110" Tag="11" ctype="PanelObjectData" ClipAble="True">
           <Size X="40" Y="40" /><Position X="-5000" Y="-5000" />
           <Children>
@@ -348,6 +352,30 @@ def main() -> int:
                 lane.release()
                 slots.release()
         check("預抓道空出來就接著算", done.wait(10))
+
+        # ---------------------------------------------------------- 換平台會超框（系統字）
+        from csdview.platform_fit import PlatformFonts
+        fonts = PlatformFonts.get().coverage()
+        expired_issue = [e for e in payload["textOverflowPlatforms"] if e["path"] == "Layer/expired"]
+        check("Android 沿用 Windows 的字寬",
+              "沿用" in fonts["android"]["note"] or "沒得沿用" in fonts["android"]["note"])
+        if fonts["windows"]["measured"]:
+            got = expired_issue[0]["platforms"] if expired_issue else {}
+            check("跨平台：Windows 放得下、iOS 會多一行就報",
+                  expired_issue and got.get("ios", {}).get("lines") == 2
+                  and "android" not in got and expired_issue[0]["windows"]["lines"] == 1,
+                  expired_issue)
+            check("跨平台：不算進 ok",
+                  "textOverflowPlatforms" in payload and "platformFonts" in payload)
+            check("網頁檢查也列出來", "Layer/expired" in chk["byNode"]
+                  and any(g["kind"] == "textOverflowPlatforms" for g in chk["groups"]))
+            n = next(x for x in flat if x["name"] == "expired")
+            _c, d = get_json("/api/node", file="Main.csd", frame=0, full=1, id=n["id"], path=n["path"])
+            widths = rows_of(d).get("文字/各平台寬度", {})
+            check("屬性面板列出各平台寬度", "iOS" in widths.get("v", "") and widths.get("status") == "warn",
+                  widths)
+        else:
+            print("[ skip ] 這台電腦沒有微軟正黑，跨平台檢查跳過")
 
         # ---------------------------------------------------------- 九宮格（屬性面板）
         def node_rows(name):

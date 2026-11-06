@@ -365,6 +365,7 @@ def node_details(report: NodeReport, chain: list[NodeReport], library: AssetLibr
         if report.overflow:
             tx.append(row("超出框", f"需要 {pair(report.overflow, ' × ')}", status="warn",
                           note=f"框只有 {pair(report.size, ' × ')}，引擎端同樣會超出"))
+        tx += _platform_rows(node, library)
         sections.append({"title": "文字", "rows": tx})
 
     # ---- 九宮格
@@ -671,7 +672,33 @@ _KINDS = {
     "panelBackground": ("info", "Panel 底圖沒拉伸",
                         "Panel 類容器的底圖沒開九宮格時，引擎照原尺寸擺在框正中央、不拉伸。"
                         "如果本來想讓圖填滿框，要開九宮格；刻意置中的話可以忽略。"),
+    "textOverflowPlatforms": ("warn", "換到其他平台會超框（系統字）",
+                              "沒指定字型的文字在 Android／iOS 用的是別的字，英文數字寬度差很多。"
+                              "Windows 放得下、換平台會多換一行或跑出底圖。調整時要讓各平台都放得下。"),
 }
+
+_PLATFORM_LABEL = {"windows": "Windows", "android": "Android", "ios": "iOS"}
+
+
+def _platform_detail(entry: dict) -> str:
+    parts = []
+    for key, got in entry["platforms"].items():
+        label = _PLATFORM_LABEL.get(key, key)
+        if entry["kind"] == "box":
+            parts.append(f"{label} 要 {got['lines']} 行、高 {num(got['height'])}"
+                         f"（Windows {entry['windows']['lines']} 行）")
+        elif entry["kind"] == "button":
+            parts.append(f"{label} 寬 {num(got['width'])}（Windows {num(entry['windows']['width'])}）")
+        else:
+            parts.append(f"{label} 寬 {num(got['width'])}，超出父層 {num(got['over'])}"
+                         f"（Windows {num(entry['windows']['width'])}）")
+    if entry["kind"] == "box":
+        frame = f"框 {pair(entry['box'], ' × ')}"
+    elif entry["kind"] == "button":
+        frame = f"按鈕寬 {num(entry['box'][0])}"
+    else:
+        frame = f"父層「{entry['parent'].split('/')[-1]}」寬 {num(entry['frame'][1] - entry['frame'][0])}"
+    return f"{frame}；" + "；".join(parts)
 
 
 def _refs_of(report: NodeReport) -> set[str]:
@@ -736,6 +763,9 @@ def check_summary(payload: dict, reports: list[NodeReport]) -> dict:
                 items.append({"nodes": [entry["path"]], "text": entry["path"],
                               "detail": f"框 {pair(entry['size'], ' × ')}，"
                                         f"圖 {pair(entry['imageSize'], ' × ')}"})
+            elif key == "textOverflowPlatforms":
+                items.append({"nodes": [entry["path"]], "text": entry["path"],
+                              "detail": _platform_detail(entry)})
         if items:
             groups.append({"kind": key, "level": level, "title": title, "hint": hint,
                            "items": items})
@@ -756,4 +786,47 @@ def check_summary(payload: dict, reports: list[NodeReport]) -> dict:
         "groups": groups,
         "byNode": by_node,
         "framesProbed": payload.get("framesProbed", []),
+        "platformFonts": payload.get("platformFonts", {}),
     }
+
+
+# ---------------------------------------------------------------- 各平台字寬
+def _platform_rows(node: Node, library: AssetLibrary) -> list[dict]:
+    """系統字在 Windows／Android／iOS 各要多寬（固定框另列各要幾行）。TTF／點陣字各平台一樣，不列。"""
+    from . import platform_fit
+
+    if not node.text.strip() or (node.font_file and node.font_file.path):
+        return []
+    if node.ctype not in ("TextObjectData", "TextFieldObjectData", "ButtonObjectData"):
+        return []
+    fonts = platform_fit.PlatformFonts.get()
+    size = max(1, int(node.font_size))
+    widths = platform_fit.text_widths(node.text, size)
+    fit = {}
+    if node.ctype != "ButtonObjectData" and node.custom_size and node.width > 0 and node.height > 0:
+        font = library.truetype(node.font_file, node.font_name, size)
+        try:
+            ascent, descent = font.getmetrics()
+            ink = float(max(1, ascent + descent))
+        except (AttributeError, OSError):
+            ink = size * 1.25
+        fit = platform_fit.box_fit(node.text, size, node.width, node.height, ink)
+
+    parts, notes, worst = [], [], None
+    for spec in fonts.platforms:
+        key, label = spec["key"], spec["label"]
+        if widths.get(key) is None:
+            parts.append(f"{label} 沒量")
+            continue
+        text = f"{label} {num(widths[key])}"
+        if key in fit:
+            text += f"（{fit[key]['lines']} 行{'' if fit[key]['fits'] else '，超框'}）"
+            if not fit[key]["fits"]:
+                worst = "warn"
+        parts.append(text)
+    base = widths.get("windows")
+    spread = [w for w in widths.values() if w is not None]
+    if base and len(spread) > 1 and max(spread) > base * 1.05:
+        notes.append(f"最寬比 Windows 寬 {round((max(spread) / base - 1) * 100)}%")
+    notes.append("Android 空位沿用 Windows；iOS 用蘋方字寬，英數可能更寬")
+    return [row("各平台寬度", "　".join(parts), status=worst, note="；".join(notes))]

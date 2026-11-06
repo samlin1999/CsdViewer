@@ -20,8 +20,24 @@
    `scale9Squeezed`（節點比九宮格兩角加起來還小，圖案被擠扁；執行時才撐開的進度條可忽略）、
    `panelBackground`（Panel 底圖沒開九宮格，引擎照原尺寸置中、不拉伸）。
    這三項是舊檔本來就有的狀況，不是你改壞的——判斷自己有沒有改壞看 `ok`。
-4. **`referenceAspectDelta > 0.02` 時先修截圖，不要動版面。** 那代表兩邊取景範圍不同。
-5. **找不到 `csdview` 指令**就請使用者到 csdview 專案資料夾執行一次 `pip install -e .`。
+4. **製作或調整 .csd 的系統字時，iOS 也要放得下，不是只看這裡的畫面。**
+   沒指定字型的文字（`.csd` 沒有 `FontResource`）在三個平台用的系統字不同。
+   Android 要的空位跟 Windows 差不多，字寬沿用微軟正黑，不讀 Noto／Roboto。
+   **會差開的是 iOS 的英數**（蘋方規則，寫死，不偵測字型檔）。
+   csdview 畫的、`textOverflow` 量的都只是 Windows 那一份。所以：
+   - 寫入時就擋：`set_prop`／`add_node`／`create_csd`／`edit_batch` 改到系統字或它的框，
+     Windows 超框或 iOS 放不下就不寫檔。照錯誤裡的寬度加寬，或縮短文案，再送一次。
+     不要等 `doctor` 的 `ok`——這一項不算進 `ok`。
+   - 回傳的 `platformText.fonts`：Android 的 note 是「沿用」微軟正黑，iOS 的 `measured` 一直是 true。
+     `clear: true` 代表 Windows 與 iOS 都放得下。Windows 的 `measured` 是 false 時照實說，不要講成有量過正黑。
+   - 程式要依該機字寬另外處理時，才加 `allowPlatformOverflow: true`，並且告訴使用者哪個節點、打算怎麼處理。
+     CoinMonopoly 的 `MainView:WrapTextWithEllipsis`（超過寬度換行、最多兩行、最後一行補 `...`）
+     只是其中一種，會截掉後面的字，**不是預設做法**。要用之前先得到同意。
+     另一種是底圖跟著長：`setTextAreaSize(0, 0)` 加上 `ignoreContentAdaptWithSize(true)`，
+     容器拉到文字右緣再加留白（`AdjustRewardTipPanelSize`，留白 20）。
+   - 已經有 `FontResource`（TTF／點陣字）的文字三個平台一樣，不受這條影響。
+5. **`referenceAspectDelta > 0.02` 時先修截圖，不要動版面。** 那代表兩邊取景範圍不同。
+6. **找不到 `csdview` 指令**就請使用者到 csdview 專案資料夾執行一次 `pip install -e .`。
    不要自行猜測工具的安裝路徑。
 
 ## 判斷準則

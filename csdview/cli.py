@@ -1005,6 +1005,8 @@ def diagnose(doc: Document, renderer: Renderer,
     atlas = _atlas_mismatch(doc.path, renderer.assets.root)
     zero = _zero_size_widgets(doc.path)
     s9_mismatch, s9_squeezed, panel_bg = _scale9_checks(doc, last, renderer.assets)
+    from . import platform_fit
+    platform_text = platform_fit.check_document(doc, last, renderer)
     payload = {
         "file": doc.path, "projectRoot": renderer.assets.root,
         "framesProbed": probes, "missingAssets": missing,
@@ -1016,6 +1018,9 @@ def diagnose(doc: Document, renderer: Renderer,
         "scale9Mismatch": s9_mismatch, "scale9Squeezed": s9_squeezed,
         "panelBackground": panel_bg,
         "advisories": len(s9_mismatch) + len(s9_squeezed) + len(panel_bg),
+        # 系統字換到 iOS 會超框的文字。Android 沿用 Windows 字寬。platformFonts 寫明各平台怎麼量。
+        "textOverflowPlatforms": platform_text,
+        "platformFonts": platform_fit.PlatformFonts.get().coverage(),
     }
     return payload, last
 

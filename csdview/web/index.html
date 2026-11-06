@@ -1459,6 +1459,11 @@ function renderCheckPanel() {
     }
     html += "</div>";
   }
+  const pf = c.platformFonts || {};
+  if (c.groups.some(g => g.kind === "textOverflowPlatforms") && Object.keys(pf).length) {
+    html += `<div class="cp-hint" style="margin-top:8px">跨平台字寬：` +
+      Object.values(pf).map(p => `${escapeHTML(p.label)}（${escapeHTML(p.note)}）`).join("、") + "</div>";
+  }
   panel.innerHTML = html;
   for (const link of panel.querySelectorAll("[data-path]")) {
     link.onclick = (e) => {

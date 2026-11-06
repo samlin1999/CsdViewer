@@ -144,6 +144,13 @@ csdview doctor <檔案.csd> --json
 `textOverflow[]` 列出文字撐破固定框的節點（附框的尺寸與實際需要的尺寸）。
 cocos 的 Label 預設不裁切，所以引擎端也會爆版——這是來源文案太長，不是移植做錯。
 
+`textOverflowPlatforms[]` 列出**沒指定字型的文字在 Windows 放得下、換到 iOS 會超框**的節點。
+引擎的 `FontHelper`：Windows 微軟正黑、Android Noto（英數 Roboto）、iOS PingFang TC。
+Android 要的空位跟 Windows 差不多，字寬直接沿用微軟正黑，不讀 Noto／Roboto。
+會差開的是 iOS 的英數（寫死的蘋方規則，`measured` 一直是 true）。
+`kind` 是 `box`（固定框多換一行或塞不下）、`button`（按鈕標題比按鈕寬）或 `parent`（自動大小的文字跑出父層的底圖）。
+`platformFonts` 的 `note` 寫明各平台怎麼量。這一項**不算進 `ok`**。調整文字讓它不超框時要自己確認 iOS 那筆也清空了。
+
 `staleLayout[]` 列出百分比版面與絕對值對不上的節點：Cocos Studio 會同時存
 `PreSize`／`PrePosition`（百分比）與 `Size`／`Position`（絕對值），兩者對不上就代表
 父層尺寸改過而該節點沒重算。**這是「沒更新的舊資源」的指紋**——畫面看起來歪掉時先查這個，

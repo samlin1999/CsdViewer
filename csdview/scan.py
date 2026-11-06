@@ -18,7 +18,7 @@ import threading
 import time
 
 # 檢查規則改了就加一：存在磁碟上的舊結果整份作廢，避免沿用舊規則的判斷
-CHECK_VERSION = 2
+CHECK_VERSION = 3
 
 PAUSE_AFTER = 20.0          # 網頁多久沒來問就暫停（秒）
 SAVE_EVERY = 25             # 每查幾個檔寫一次磁碟

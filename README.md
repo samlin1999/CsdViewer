@@ -229,6 +229,34 @@ csdview render Deal.csd --no-full-bounds       # 只畫設計區（預設會連�
 （節點比兩角小）、`panelBackground`（Panel 底圖沒拉伸），合計數在 `advisories`，不影響 `ok`：
 csd MCP 的 agent 靠 `ok` 判斷改檔有沒有改壞，不能讓一堆原本通過的舊檔突然不通過。
 
+### 系統字在各平台寬度不同
+
+`.csd` 沒指定字型（沒有 `FontResource`）的文字，執行時由引擎的 `FontHelper` 依平台挑字：
+Windows 微軟正黑、iOS PingFang TC（英數是 San Francisco）、Android Noto Sans CJK TC（英數是 Roboto）。
+字級的意思三邊相同。Android 要的空位跟 Windows 差不多，所以這裡直接沿用微軟正黑的字寬，不讀 Noto／Roboto。
+會跟 Windows 差開的是 iOS 的英數。
+csdview 畫的與 `textOverflow` 量的都是 Windows 那一份，所以另外有：
+
+- `doctor` 的 `textOverflowPlatforms`：Windows 放得下、換平台會超框的文字——固定框多換一行或塞不下、
+  按鈕標題比按鈕寬、自動大小的文字跑出父層底圖。網頁「檢查」裡是「換到其他平台會超框」
+- 屬性面板「文字」分區的「各平台寬度」：每個平台要多寬、固定框各要幾行
+- 行高不比：各平台行高看實際用到的主字型，Windows 上驗證不了；這裡沿用 csdview 的行高，只抓字變寬造成的超框
+
+怎麼量寫在 `platformFonts`（量不到的不假裝量過）：
+
+| 平台 | 怎麼量 |
+| --- | --- |
+| Windows | 微軟正黑（`msjh.ttc`，Windows 內建） |
+| Android | 空位跟 Windows 差不多，沿用微軟正黑的字寬，不讀 Noto／Roboto |
+| iOS | 內建蘋方規則，不讀字型檔。漢字與全形一個字寬；英數與半形標點用 PingFang TC Regular 量好的字寬表 |
+
+Windows 的字型可以裝在系統（含「只為我安裝」），或放在一個資料夾後設 `CSDVIEW_FONT_DIR` 指向它。
+Android 和 iOS 都不看這台電腦有沒有對應的字型檔。
+
+這一項不算進 `ok`：舊檔在 Windows 放得下、iOS 放不下的很多，不能讓它們突然變成不通過。
+給 agent 的規則（`dropin/CLAUDE.md`）要求調整文字時把 iOS 超框也清掉。
+根本解是遊戲內附一套 TTF 讓三個平台都用它（引擎的 `Text` 在字型名稱是檔案路徑時會改走 FreeType）。
+
 想讓某個專案裡的 agent 自動知道這個工具，把 [dropin/CLAUDE.md](dropin/CLAUDE.md)
 複製到該專案根目錄即可，見 [dropin/README.md](dropin/README.md)。
 
