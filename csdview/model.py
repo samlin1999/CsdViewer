@@ -168,6 +168,10 @@ class Node:
 
     children: list["Node"] = field(default_factory=list)
     attrs: dict[str, str] = field(default_factory=dict)     # 未解讀的原始屬性
+    # 節點底下的設定元素（<Size>、<PressedFileData>、<OutlineColor>…）原樣留著，
+    # tag -> 屬性。渲染用不到的（按下圖、停用圖）也在這裡，網頁的屬性面板靠它
+    # 把 .csd 裡寫的每一項都列出來，而不是只列渲染器認得的那些。
+    elements: dict[str, dict[str, str]] = field(default_factory=dict)
 
     # ------------------------------------------------------------
     @property

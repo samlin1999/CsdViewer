@@ -931,18 +931,18 @@ def _atlas_mismatch(csd_path: str, root: str) -> list[dict]:
                     "expectedPlist": want})
     return out
 
-def cmd_doctor(args) -> int:
-    doc, renderer = _build(args)
-    # doctor 回報的每一項都不需要那張圖：缺少的資源是在解析素材時記下來的、
-    # textOverflow 來自文字量測、staleLayout/atlasMismatch/zeroSize 只讀 .csd。
-    # 所以關掉像素合成——下面要探測多個影格，畫出來的圖全部會被丟掉。
-    # 實測 540 KB 的檔 1826 ms -> 137 ms；250 個檔的輸出逐欄位完全相同。
-    renderer.options.layout_only = True
+def diagnose(doc: Document, renderer: Renderer,
+             visibility: "dict[str, bool] | None" = None) -> tuple[dict, RenderResult]:
+    """doctor 的全部檢查，回傳 (payload, 最後一格的 layout 結果)。
+
+    CLI 的 doctor 與網頁介面的「檢查」都走這裡，兩邊的判斷才不會分家。
+    renderer 必須是 layout_only 的（呼叫端負責）：要探測好幾格，畫出來的圖都用不到。
+    """
     start, end = anim.resolve_range(doc, None)
     probes = sorted({0, int(start), int((start + end) / 2), int(end)})
     last = None
     for frame in probes:
-        last = renderer.render(doc, float(frame), "", _visibility(args))
+        last = renderer.render(doc, float(frame), "", visibility or {})
 
     missing = sorted(renderer.assets.missing)
     stale = _stale_layout(doc)
@@ -960,6 +960,21 @@ def cmd_doctor(args) -> int:
         "atlasMismatch": atlas, "zeroSize": zero,
         "ok": not missing and not stale and not overflow and not atlas and not zero,
     }
+    return payload, last
+
+
+def cmd_doctor(args) -> int:
+    doc, renderer = _build(args)
+    # doctor 回報的每一項都不需要那張圖：缺少的資源是在解析素材時記下來的、
+    # textOverflow 來自文字量測、staleLayout/atlasMismatch/zeroSize 只讀 .csd。
+    # 所以關掉像素合成——下面要探測多個影格，畫出來的圖全部會被丟掉。
+    # 實測 540 KB 的檔 1826 ms -> 137 ms；250 個檔的輸出逐欄位完全相同。
+    renderer.options.layout_only = True
+    payload, _last = diagnose(doc, renderer, _visibility(args))
+    missing, stale = payload["missingAssets"], payload["staleLayout"]
+    overflow, atlas, zero = (payload["textOverflow"], payload["atlasMismatch"],
+                             payload["zeroSize"])
+    probes = payload["framesProbed"]
     lines = [f"專案根目錄: {renderer.assets.root}",
              f"檢查影格  : {probes}"]
     if missing:

@@ -7,13 +7,14 @@
 <style>
   :root {
     --bg: #16171b; --panel: #1e2026; --panel-2: #24262e; --line: #33363f;
-    --text: #e6e8ee; --muted: #9aa0ad; --accent: #4ea1ff; --accent-dim: #2b6fb8;
-    --warn: #ffb454;
+    --text: #e6e8ee; --muted: #9aa0ad; --faint: #6d7280; --accent: #4ea1ff; --accent-dim: #2b6fb8;
+    --warn: #ffb454; --err: #ff7b7b; --ok: #6ee7a0; --anim: #c9b6ff;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { height: 100%; margin: 0; }
   body {
-    display: grid; grid-template-columns: 260px 1fr 300px; grid-template-rows: 1fr auto;
+    display: grid; grid-template-columns: 250px 1fr 380px; grid-template-rows: 1fr auto;
     font: 13px/1.5 "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
     background: var(--bg); color: var(--text); overflow: hidden;
   }
@@ -23,6 +24,11 @@
   .panel.right { border-right: none; border-left: 1px solid var(--line); }
   .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
               color: var(--muted); margin: 0; padding: 10px 12px 6px; font-weight: 600; }
+  .phead { display: flex; align-items: center; gap: 8px; padding-right: 10px; }
+  .phead h2 { flex: none; }
+  .phead .stat { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  input.find { flex: 1; min-width: 0; margin: 6px 0 4px; padding: 4px 8px; border-radius: 5px;
+               border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font: inherit; }
 
   /* 檔案列表 */
   #search { margin: 4px 10px 8px; padding: 6px 8px; border-radius: 5px;
@@ -35,35 +41,125 @@
   .file:hover { background: var(--panel-2); }
   .file.active { background: var(--accent-dim); color: #fff; }
 
-  /* 舞台 */
-  #stage { position: relative; overflow: auto; display: grid;
+  /* 中間：上方資訊列 + 舞台 */
+  #center { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+  #topbar { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+            background: var(--panel); border-bottom: 1px solid var(--line); min-height: 40px;
+            flex-wrap: wrap; }
+  #fileTitle { font-weight: 600; font-size: 14px; }
+  .spacer { flex: 1; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 12px;
+          font-size: 12px; border: 1px solid var(--line); background: var(--panel-2);
+          cursor: default; user-select: none; white-space: nowrap; }
+  .chip.click { cursor: pointer; }
+  .chip.click:hover { border-color: var(--accent); }
+  .chip.ok { color: var(--ok); border-color: #2f6b4c; background: #17291f; }
+  .chip.err { color: var(--err); border-color: #7a3434; background: #2c1a1a; }
+  .chip.warn { color: var(--warn); border-color: #7a5a2a; background: #2c2417; }
+  .chip.busy { color: var(--muted); }
+  .chip.sel { color: #fff; border-color: var(--accent); background: #1d3350; }
+  .chip .x { cursor: pointer; color: var(--muted); padding-left: 2px; }
+  .chip .x:hover { color: #fff; }
+
+  #checkPanel { position: absolute; top: 41px; left: 12px; right: 12px; z-index: 5;
+                max-height: 52%; overflow: auto; background: #1b1d23f2; border: 1px solid var(--line);
+                border-radius: 8px; box-shadow: 0 12px 40px #000a; padding: 4px 14px 12px; }
+  .cp-head { display: flex; align-items: center; gap: 10px; padding: 8px 0 4px;
+             position: sticky; top: 0; background: #1b1d23; }
+  .cp-head b { font-size: 13px; }
+  .cp-group { padding: 8px 0 2px; border-top: 1px solid var(--line); margin-top: 6px; }
+  .cp-title { font-weight: 600; }
+  .cp-title .count { font-weight: 400; color: var(--muted); margin-left: 4px; }
+  .cp-hint { color: var(--muted); font-size: 12px; margin: 1px 0 5px; }
+  .cp-item { padding: 3px 8px; border-radius: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .cp-item.link { cursor: pointer; }
+  .cp-item.link:hover { background: var(--panel-2); }
+  .cp-item .mono { color: var(--text); }
+  .cp-detail { color: var(--muted); font-size: 12px; }
+  .cp-nodes { display: flex; gap: 6px; flex-wrap: wrap; width: 100%; padding-left: 12px; }
+  .cp-nodes span { cursor: pointer; color: var(--accent); font-size: 12px; }
+  .cp-nodes span:hover { text-decoration: underline; }
+
+  #stage { position: relative; overflow: auto; display: grid; flex: 1;
            place-items: center; place-items: safe center;
            background: #101115; min-height: 0; }
+  #frame { position: relative; display: inline-block; line-height: 0; }
   #stage img { image-rendering: auto; box-shadow: 0 0 0 1px #000a, 0 12px 40px #0008;
-               transform-origin: center; }
-  #empty { color: var(--muted); text-align: center; }
+               cursor: crosshair; display: block; }
+  #empty { color: var(--muted); text-align: center; line-height: 1.8; }
   #badge { position: absolute; top: 10px; left: 12px; background: #000a; color: var(--muted);
            padding: 4px 9px; border-radius: 5px; font-size: 11px; pointer-events: none; }
   #spinner { position: absolute; top: 10px; right: 12px; width: 14px; height: 14px;
              border: 2px solid var(--accent); border-right-color: transparent;
              border-radius: 50%; animation: spin .7s linear infinite; display: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .box { position: absolute; display: none; pointer-events: none; }
+  .box.hover { outline: 1px dashed #ffffffb0; background: #ffffff10; }
+  .box.sel { outline: 2px solid var(--accent); box-shadow: 0 0 0 9999px #00000040; }
+  .box.sel.ghost { outline-style: dashed; outline-color: var(--err); }
+  .box .tag { position: absolute; left: -2px; bottom: 100%; margin-bottom: 4px; line-height: 1.4;
+              background: var(--accent); color: #fff; font-size: 11px; padding: 1px 6px;
+              border-radius: 3px; white-space: nowrap; }
+  .box.sel.ghost .tag { background: var(--err); }
+  .box.hover .tag { background: #000c; color: #fff; }
+  .box .tag.below { bottom: auto; top: 100%; margin: 4px 0 0; }
+  .box .tag.right { left: auto; right: -2px; }
 
   /* 節點樹 */
-  #tree { flex: 1; overflow: auto; padding: 4px 8px 12px; font-size: 12px; }
-  .node { padding: 2px 4px; border-radius: 3px; cursor: default; white-space: nowrap; }
+  #tree { height: 40%; min-height: 80px; overflow: auto; padding: 2px 8px 10px; font-size: 12px;
+          resize: vertical; border-bottom: 1px solid var(--line); }
+  .node { padding: 1px 4px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
   .node:hover { background: var(--panel-2); }
+  .node.sel { background: var(--accent-dim); color: #fff; }
+  .node.sel .kind, .node.sel .dim { color: #d6e6ff; }
+  .node.match .label { color: var(--warn); }
   .node .kind { color: var(--muted); font-size: 11px; }
-  .node .dim { color: #6d7280; }
+  .node .dim { color: var(--faint); }
   .node.hidden > .label { opacity: .42; text-decoration: line-through; }
+  .node .issue { margin-left: 4px; font-size: 11px; }
   .toggle { display: inline-block; width: 12px; color: var(--muted); cursor: pointer;
             user-select: none; }
   .eye { display: inline-block; width: 15px; text-align: center; cursor: pointer;
          color: #5c6270; user-select: none; font-size: 11px; }
   .eye:hover { color: var(--accent); }
-  .eye.on  { color: #6ee7a0; }       /* 被強制顯示 */
-  .eye.off { color: #ff7b7b; }       /* 被強制隱藏 */
+  .eye.on  { color: var(--ok); }        /* 被強制顯示 */
+  .eye.off { color: var(--err); }       /* 被強制隱藏 */
   .kids.collapsed { display: none; }
+
+  /* 屬性面板 */
+  #inspector { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 16px; font-size: 12px; }
+  .hint { color: var(--muted); padding: 14px 2px; line-height: 1.7; }
+  .ihead { padding: 8px 0 8px; position: sticky; top: 0; background: var(--panel); z-index: 1; }
+  .iname { font-size: 15px; font-weight: 600; word-break: break-all; }
+  .itype { color: var(--muted); }
+  .iact { display: flex; gap: 6px; margin-top: 6px; }
+  .iact button { padding: 2px 9px; font-size: 12px; }
+  .issues { border: 1px solid #7a3434; background: #2c1a1a; border-radius: 6px;
+            padding: 6px 9px; margin: 2px 0 8px; display: flex; flex-direction: column; gap: 3px; }
+  .issues.warnonly { border-color: #7a5a2a; background: #2c2417; }
+  details.sec { border-top: 1px solid var(--line); }
+  details.sec > summary { cursor: pointer; padding: 6px 0 5px; color: var(--muted); font-size: 11px;
+                          font-weight: 600; letter-spacing: .05em; list-style: none; user-select: none; }
+  details.sec > summary::-webkit-details-marker { display: none; }
+  details.sec > summary::before { content: "▾ "; }
+  details.sec:not([open]) > summary::before { content: "▸ "; }
+  details.sec > summary:hover { color: var(--text); }
+  .kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; padding: 0 0 9px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { word-break: break-all; min-width: 0; }
+  .kv .dim { opacity: .55; }
+  .kv .note { display: block; color: var(--faint); font-size: 11px; line-height: 1.45; }
+  .mono { font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 11.5px; }
+  .pre { white-space: pre-wrap; }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+            border: 1px solid #ffffff50; vertical-align: -2px; margin-right: 6px; }
+  .pill { font-size: 10px; padding: 0 6px; border-radius: 8px; background: #3b2d5a;
+          color: var(--anim); margin-left: 6px; white-space: nowrap; }
+  .st-ok { color: var(--ok); } .st-missing, .st-error { color: var(--err); }
+  .st-warn { color: var(--warn); } .st-default { color: var(--muted); }
+  .raw { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; padding-bottom: 10px; }
+  .raw .k { color: var(--muted); }
+  .raw .v { word-break: break-all; }
 
   /* 底部控制列 */
   #controls { grid-column: 1 / -1; background: var(--panel); border-top: 1px solid var(--line);
@@ -94,16 +190,39 @@
   <div id="files"></div>
 </div>
 
-<div id="stage">
-  <div id="empty">從左側選一個 .csd 檔案</div>
-  <img id="view" hidden alt="">
-  <div id="badge" hidden></div>
-  <div id="spinner"></div>
+<div id="center">
+  <div id="topbar">
+    <span id="fileTitle">未選擇檔案</span>
+    <span class="stat" id="fileMeta"></span>
+    <span id="checkChip" class="chip" hidden></span>
+    <span class="spacer"></span>
+    <span id="selChip" class="chip sel" hidden></span>
+  </div>
+  <div id="checkPanel" hidden></div>
+  <div id="stage">
+    <div id="empty">從左側選一個 .csd 檔案<br>
+      <span class="stat">選好之後，點畫面上的元件就能在右邊看到它的全部設定</span></div>
+    <div id="frame">
+      <img id="view" hidden alt="">
+      <div id="hoverBox" class="box hover"><span class="tag" id="hoverTag"></span></div>
+      <div id="selBox" class="box sel"><span class="tag" id="selTag"></span></div>
+    </div>
+    <div id="badge" hidden></div>
+    <div id="spinner"></div>
+  </div>
 </div>
 
 <div class="panel right">
-  <h2>節點階層</h2>
+  <div class="phead">
+    <h2>節點階層</h2>
+    <input id="nodeSearch" class="find" placeholder="找節點（名稱或類型）…" autocomplete="off">
+  </div>
   <div id="tree"></div>
+  <div class="phead"><h2>屬性</h2><span class="stat" id="inspInfo"></span></div>
+  <div id="inspector">
+    <div class="hint">點畫面上的元件，或上面階層裡的節點，這裡會列出它的全部設定：
+      位置、大小、顏色、用到的圖與字型（找不找得到）、文字、動畫，以及 .csd 裡寫的原始內容。</div>
+  </div>
 </div>
 
 <div id="controls">
@@ -113,6 +232,7 @@
     <input type="range" id="timeline" min="0" max="0" value="0" step="1" disabled>
     <input type="number" id="frameNum" value="0" min="0" step="1" disabled>
     <span class="stat" id="frameInfo">—</span>
+    <span class="stat" id="prefetchInfo"></span>
   </div>
   <div class="row">
     <label class="check"><input type="checkbox" id="annotate"> 標註節點</label>
@@ -136,9 +256,11 @@
     </label>
     <label class="check">縮放
       <select id="zoom">
+        <option value="fit" selected>符合畫面</option>
+        <option value="0.25">25%</option>
         <option value="0.5">50%</option>
         <option value="0.75">75%</option>
-        <option value="1" selected>100%</option>
+        <option value="1">100%</option>
         <option value="1.5">150%</option>
         <option value="2">200%</option>
       </select>
@@ -153,7 +275,8 @@
     </label>
     <span class="stat" id="status"></span>
     <span class="stat" style="margin-left:auto">
-      <kbd>空白鍵</kbd> 播放 · <kbd>←</kbd><kbd>→</kbd> 逐格 · <kbd>Home</kbd>/<kbd>End</kbd> 頭尾
+      點畫面選元件（同一點再點換下一層）· <kbd>Esc</kbd> 取消 · <kbd>空白鍵</kbd> 播放 ·
+      <kbd>←</kbd><kbd>→</kbd> 逐格 · <kbd>Home</kbd>/<kbd>End</kbd> 頭尾
     </span>
   </div>
 </div>
@@ -163,13 +286,27 @@ const FPS = 60;
 const el = (id) => document.getElementById(id);
 const state = {
   file: null, info: null, anim: "", start: 0, end: 0, frame: 0,
-  playing: false, cache: new Map(), reqId: 0, treeTimer: null, prefetch: null,
+  playing: false, cache: new Map(), reqId: 0, treeTimer: null,
   // 節點路徑 -> true 強制顯示 / false 強制隱藏；沒有紀錄就照 .csd
   vis: new Map(),
   watchTimer: null, watchEvery: 0, nonce: 0,
   // 偵測到改動、但還在等檔案寫完的指紋
   pendingStamp: null, pendingSince: 0,
+  // 背景預抓：gen 換了就代表之前排的全部作廢；est 是每格大概要算多久（毫秒）
+  pf: { gen: 0, inflight: new Map(), failed: new Set(), est: 0 },
+  // 正在看的那一格：busy 是發出去那張所屬的 gen（-1 表示沒有），want 是排著等的最新要求
+  live: { busy: -1, want: 0 },
+  // 最後一次載入的節點樹：flat 是前序（後面的畫在上面），byId 查節點與它的那一列
+  flat: [], byId: new Map(), byPath: new Map(), treeFresh: true, imageSize: null,
+  sel: null, hover: null, lastClick: null,
+  check: null,
+  // 屬性面板裡被收起來的分區，換節點時維持
+  closed: new Set(["原始設定"]),
 };
+
+const escapeHTML = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const escapeAttr = escapeHTML;
 
 function visParams() {
   const hide = [], show = [];
@@ -210,7 +347,7 @@ async function loadFiles(fresh) {
       row.style.display = row.dataset.path.toLowerCase().includes(needle) ? "" : "none";
     }
   }
-  el("status").textContent = `${data.files.length} 個檔案`;
+  if (!state.file) el("status").textContent = `${data.files.length} 個檔案`;
 }
 
 el("search").oninput = (e) => {
@@ -221,22 +358,7 @@ el("search").oninput = (e) => {
 };
 
 // ---------------------------------------------------------------- 選檔
-async function selectFile(path, row) {
-  stopPlay();
-  state.cache.clear();
-  if (state.prefetch) state.prefetch.cancelled = true;
-  let ok = false;
-  document.querySelectorAll("#files .file.active").forEach(n => n.classList.remove("active"));
-  if (row) row.classList.add("active");
-
-  state.file = path;
-  state.vis.clear();
-  el("visReset").disabled = true;
-  el("visReset").textContent = "重設可視";
-  const info = await fetch("/api/info?file=" + encodeURIComponent(path)).then(r => r.json());
-  if (info.error) { el("status").innerHTML = `<span class="warn">${info.error}</span>`; return; }
-  state.info = info;
-
+function fillAnimations(info, keep) {
   const select = el("anim");
   select.innerHTML = "";
   const full = document.createElement("option");
@@ -248,14 +370,50 @@ async function selectFile(path, row) {
     opt.textContent = `${a.name} (${a.start}~${a.end})`;
     select.appendChild(opt);
   }
-  select.value = info.defaultAnimation && info.animations.some(a => a.name === info.defaultAnimation)
-    ? info.defaultAnimation : "";
-  select.disabled = false;
+  select.value = info.animations.some(a => a.name === keep) ? keep : "";
+}
+
+async function selectFile(path, row) {
+  stopPlay();
+  state.cache.clear();
+  cancelPrefetch();
+  state.pf.est = 0;                       // 換檔案了，每格要多久重新量
+  document.querySelectorAll("#files .file.active").forEach(n => n.classList.remove("active"));
+  if (row) row.classList.add("active");
+
+  state.file = path;
+  state.vis.clear();
+  state.flat = []; state.byId = new Map(); state.byPath = new Map();
+  state.treeFresh = true; state.sel = null; state.hover = null; state.check = null;
+  el("visReset").disabled = true;
+  el("visReset").textContent = "重設可視";
+  el("checkPanel").hidden = true;
+  el("nodeSearch").value = "";
+  showInspectorHint();
+  updateSelChip();
+  drawOverlay();
+
+  const info = await fetch("/api/info?file=" + encodeURIComponent(path)).then(r => r.json());
+  if (info.error) { el("status").innerHTML = `<span class="warn">${escapeHTML(info.error)}</span>`; return; }
+  state.info = info;
+
+  fillAnimations(info, info.defaultAnimation);
+  el("anim").disabled = false;
+  el("fileTitle").textContent = info.name;
+  el("fileTitle").title = path;
+  showFileMeta();
 
   applyAnim();
   startWatching();
-  el("status").textContent =
-    `${info.name} · ${info.size[0] || "auto"}×${info.size[1] || "auto"} · ${info.nodeCount} 節點`;
+  loadCheck();
+}
+
+function showFileMeta() {
+  const info = state.info;
+  const anims = info.animations.length ? ` · ${info.animations.length} 段動畫` : "";
+  el("fileMeta").textContent =
+    `${info.size[0] || "auto"}×${info.size[1] || "auto"} · ${info.nodeCount} 個節點${anims}`;
+  el("status").textContent = "";
 }
 
 function applyAnim() {
@@ -272,12 +430,12 @@ function applyAnim() {
   el("play").disabled = state.end <= state.start;
   el("frameNum").disabled = false;
 
+  cancelPrefetch();
   setFrame(state.start);
-  prefetch();
 }
 
 // ---------------------------------------------------------------- 影格
-function frameURL(frame) {
+function frameURL(frame, isPrefetch) {
   const q = new URLSearchParams({
     file: state.file, frame: String(frame), anim: state.anim,
     // 版本參數同時含 .csd 的 mtime 與伺服器開機序號：
@@ -289,16 +447,19 @@ function frameURL(frame) {
     full: el("fullbounds").checked ? "1" : "0",
     ...visParams(),
   });
+  // 背景預抓排在另一條道上，伺服器永遠留一格給你正在看的這一格
+  if (isPrefetch) q.set("pf", "1");
   return "/api/frame?" + q.toString();
 }
 
-function cacheKey(frame) {
+// 除了影格號以外的部分，一次算好；預抓要對好幾百格算鍵
+function keyBase() {
   const v = visParams();
-  return [state.nonce, frame, el("bg").value, el("annotate").checked,
-          el("particles").checked,
-          el("fullbounds").checked, state.anim, state.file,
+  return [state.nonce, el("bg").value, el("annotate").checked,
+          el("particles").checked, el("fullbounds").checked, state.anim, state.file,
           v.hide, v.show].join("|");
 }
+function cacheKey(frame, base) { return (base ?? keyBase()) + "|" + frame; }
 
 function setFrame(frame) {
   frame = Math.max(state.start, Math.min(state.end, Math.round(frame)));
@@ -312,31 +473,62 @@ function setFrame(frame) {
   const key = cacheKey(frame);
   const view = el("view");
   const cached = state.cache.get(key);
+  // 每次都換號：還在載入的舊影格回來時，不能蓋掉已經顯示的新影格
+  const id = ++state.reqId;
   if (cached) {
     view.src = cached; view.hidden = false; el("empty").hidden = true;
     el("spinner").style.display = "none";
   } else {
-    const id = ++state.reqId;
     el("spinner").style.display = "block";
-    const img = new Image();
-    img.onload = () => {
-      state.cache.set(key, img.src);
-      if (id === state.reqId) {
-        view.src = img.src; view.hidden = false; el("empty").hidden = true;
-        el("spinner").style.display = "none";
-        updateBadge(img);
-        applyZoom();          // naturalWidth 要等載入完才有值
-      }
-    };
-    img.onerror = () => {
-      if (id !== state.reqId) return;
-      el("spinner").style.display = "none";
-      el("status").innerHTML = `<span class="warn">影格 ${frame} 載入失敗</span>`;
-    };
-    img.src = frameURL(frame);
+    const pending = state.pf.inflight.get(key);
+    if (pending) {
+      pending.show = id;                  // 預抓正在算這一格，等它就好，不必再算一次
+    } else {
+      requestLive(frame, key, id);
+    }
   }
   applyZoom();
   scheduleTree();
+  kickPrefetch();
+}
+
+// 正在看的那一格：同時只算一張，後到的只記「最新要哪一格」。
+// 圖一旦發出去就收不回來——大檔一格兩秒多，快速拖過 50 格沒算過的位置，
+// 原本是 50 張全部排進伺服器（兩分鐘的滿載）；現在中間經過的格子直接跳過。
+function requestLive(frame, key, id) {
+  const live = state.live;
+  if (live.busy === state.pf.gen) { live.want = id; return; }
+  live.busy = state.pf.gen;
+  const gen = state.pf.gen, t0 = performance.now();
+  const img = new Image();
+  const done = (ok) => {
+    if (ok) {
+      state.cache.set(key, img.src);      // 鍵含所有選項，作廢了也還是對的圖
+      if (!state.pf.est) noteRenderTime(performance.now() - t0);
+    }
+    if (id === state.reqId) showImage(img, ok, frame);
+    if (gen !== state.pf.gen) return;     // 換檔或換選項之後，新的要求自己會發
+    live.busy = -1;
+    const want = live.want;
+    live.want = 0;
+    if (want && want === state.reqId) setFrame(state.frame);   // 補上使用者最後停的那一格
+    schedulePrefetchInfo();
+  };
+  img.onload = () => done(true);
+  img.onerror = () => done(false);
+  img.src = frameURL(frame);
+}
+
+function showImage(img, ok, frame) {
+  el("spinner").style.display = "none";
+  if (!ok) {
+    el("status").innerHTML = `<span class="warn">影格 ${frame} 載入失敗</span>`;
+    return;
+  }
+  const view = el("view");
+  view.src = img.src; view.hidden = false; el("empty").hidden = true;
+  updateBadge(img);
+  applyZoom();          // naturalWidth 要等載入完才有值
 }
 
 function updateBadge(img) {
@@ -345,37 +537,122 @@ function updateBadge(img) {
   badge.textContent = `${img.naturalWidth} × ${img.naturalHeight} px`;
 }
 
+// 「符合畫面」：整張圖塞進舞台，大畫布一打開就看得到全貌；小元件最多放大到 3 倍
+function zoomLevel() {
+  const v = el("zoom").value;
+  if (v !== "fit") return parseFloat(v) || 1;
+  const view = el("view"), stage = el("stage");
+  if (!view.naturalWidth || !stage.clientWidth) return 1;
+  return Math.min(3, (stage.clientWidth - 24) / view.naturalWidth,
+                  (stage.clientHeight - 24) / view.naturalHeight);
+}
+
 function applyZoom() {
-  const z = parseFloat(el("zoom").value);
+  const z = zoomLevel();
   const view = el("view");
   // 用實際寬度而不是 CSS transform：transform 不會改變版面尺寸，
   // 放大後圖會超出容器又產生不了捲軸，看不到的部分就永遠看不到。
-  if (!view.naturalWidth) { view.style.width = ""; return; }
+  if (!view.naturalWidth) { view.style.width = ""; drawOverlay(); return; }
   view.style.width = Math.round(view.naturalWidth * z) + "px";
   view.style.height = "auto";
+  drawOverlay();
 }
 
-// 背景把整段動畫的影格先抓下來，拖曳與播放才會順
-function prefetch() {
-  if (state.prefetch) state.prefetch.cancelled = true;
-  const job = { cancelled: false };
-  state.prefetch = job;
-  const total = state.end - state.start;
-  if (total <= 0 || total > 600) return;
+// ---------------------------------------------------------------- 背景預抓
+// 原本是一開檔就把整段動畫（最多 600 格）用 4 條連線一路抓完。小檔沒差，
+// 大檔（4003×3146、一格 2 秒多、300 MB）等於讓電腦連續滿載好幾分鐘。
+// 現在：一次只算 1～2 格，只抓「目前這格往後」一個預算內的格數，
+// 量到每格要多久就自動縮放範圍；分頁在背景時完全停。
+const PREFETCH_BUDGET = 20000;   // 一輪預抓最多讓伺服器算多久（毫秒）
+const PREFETCH_MAX = 600;
 
-  let next = state.start;
-  const worker = () => {
-    if (job.cancelled) return;
-    while (next <= state.end && state.cache.has(cacheKey(next))) next++;
-    if (next > state.end) return;
-    const frame = next++;
-    const img = new Image();
-    img.onload = img.onerror = () => {
-      if (!job.cancelled) { state.cache.set(cacheKey(frame), img.src); worker(); }
-    };
-    img.src = frameURL(frame);
+function noteRenderTime(ms) {
+  ms = Math.max(1, ms);
+  state.pf.est = state.pf.est ? state.pf.est * 0.7 + ms * 0.3 : ms;
+}
+
+function cancelPrefetch() {
+  state.pf.gen++;
+  state.pf.inflight = new Map();
+  state.pf.failed = new Set();
+}
+
+function prefetchWindow() {
+  const total = state.end - state.start + 1;
+  if (total <= 1) return 0;
+  const est = state.pf.est;
+  const n = est ? Math.round(PREFETCH_BUDGET / est) : 8;
+  return Math.max(Math.min(8, total), Math.min(n, total, PREFETCH_MAX));
+}
+
+function nextPrefetchFrame() {
+  const n = prefetchWindow();
+  const span = state.end - state.start + 1;
+  const base = keyBase();
+  for (let i = 1; i <= n; i++) {
+    let f = state.frame + i;
+    if (f > state.end) {
+      if (!el("loop").checked) break;
+      f = state.start + (f - state.end - 1) % span;
+    }
+    const key = cacheKey(f, base);
+    if (!state.cache.has(key) && !state.pf.inflight.has(key) && !state.pf.failed.has(key)) return f;
+  }
+  return null;
+}
+
+function kickPrefetch() {
+  if (!state.file || !state.info || document.hidden) { schedulePrefetchInfo(); return; }
+  const limit = state.pf.est && state.pf.est < 120 ? 2 : 1;
+  while (state.pf.inflight.size < limit) {
+    const frame = nextPrefetchFrame();
+    if (frame === null) break;
+    startPrefetch(frame);
+  }
+  schedulePrefetchInfo();
+}
+
+function startPrefetch(frame) {
+  const gen = state.pf.gen, key = cacheKey(frame);
+  const job = { show: 0 };
+  state.pf.inflight.set(key, job);
+  const t0 = performance.now();
+  const img = new Image();
+  img.onload = img.onerror = (ev) => {
+    const ok = !ev || ev.type !== "error";
+    // 使用者正在等這一格（setFrame 掛上來的）就先給他看
+    if (job.show && job.show === state.reqId) showImage(img, ok, frame);
+    if (gen !== state.pf.gen) return;     // 已經作廢（換檔、換選項）
+    state.pf.inflight.delete(key);
+    if (ok) { state.cache.set(key, img.src); noteRenderTime(performance.now() - t0); }
+    else state.pf.failed.add(key);        // 不重試，免得一直打同一格
+    kickPrefetch();
   };
-  for (let i = 0; i < 4; i++) worker();
+  img.src = frameURL(frame, true);
+}
+
+let prefetchInfoTimer = null;
+function schedulePrefetchInfo() {
+  if (prefetchInfoTimer) return;
+  prefetchInfoTimer = setTimeout(() => { prefetchInfoTimer = null; updatePrefetchInfo(); }, 250);
+}
+
+function updatePrefetchInfo() {
+  const box = el("prefetchInfo");
+  const total = state.end - state.start + 1;
+  if (!state.file || !state.info || total <= 1) { box.textContent = ""; return; }
+  const base = keyBase();
+  let ready = 0;
+  for (let f = state.start; f <= state.end; f++) if (state.cache.has(cacheKey(f, base))) ready++;
+  const est = state.pf.est, win = prefetchWindow();
+  let text = `已備妥 ${ready}/${total} 格`;
+  if (document.hidden) text += "（分頁在背景，暫停預抓）";
+  else if (est >= 300 && win < total) {
+    text += ` · 每格約 ${(est / 1000).toFixed(1)} 秒，只預抓往後 ${win} 格以免拖慢電腦`;
+  }
+  box.textContent = text;
+  box.title = "預先在背景算好的影格，拖時間軸與播放會直接用。\n" +
+    "預抓一次只算 1～2 格，而且永遠讓你正在看的那一格先算。";
 }
 
 // ---------------------------------------------------------------- 播放
@@ -418,42 +695,80 @@ function scheduleTree() {
   state.treeTimer = setTimeout(loadTree, 220);
 }
 
-async function loadTree() {
-  if (!state.file) return;
-  const q = new URLSearchParams({
+function layoutQuery(extra) {
+  return new URLSearchParams({
     file: state.file, frame: String(state.frame), anim: state.anim,
     particles: el("particles").checked ? "1" : "0",
     full: el("fullbounds").checked ? "1" : "0",
-    ...visParams(),
+    ...visParams(), ...(extra || {}),
   });
-  const data = await fetch("/api/tree?" + q).then(r => r.json()).catch(() => null);
+}
+
+let treeSeq = 0;
+async function loadTree() {
+  if (!state.file) return;
+  const seq = ++treeSeq, file = state.file;
+  const data = await fetch("/api/tree?" + layoutQuery()).then(r => r.json()).catch(() => null);
+  if (seq !== treeSeq || file !== state.file) return;      // 已經有更新的要求
   if (!data || !data.tree) return;
 
   const box = el("tree");
+  const scroll = box.scrollTop;
   const open = new Set([...box.querySelectorAll(".kids:not(.collapsed)")].map(n => n.dataset.path));
+  const known = new Set([...box.querySelectorAll(".kids")].map(n => n.dataset.path));
+  state.flat = []; state.byId = new Map(); state.byPath = new Map();
+  state.imageSize = data.imageSize;
+  countNodes(data.tree);
+  // 第一次打開：小檔全展開；大檔先展開兩層，其他用搜尋或點畫面找
+  const fresh = state.treeFresh;
+  state.treeFresh = false;
+  const expandAll = fresh && state.total <= 150;
   box.innerHTML = "";
-  box.appendChild(renderNode(data.tree, open, true));
+  box.appendChild(renderNode(data.tree, -1, { open, known, fresh, expandAll }));
+  box.scrollTop = scroll;
+  markIssueRows();
+  filterTree();
 
-  if (data.missingAssets && data.missingAssets.length) {
-    const warn = document.createElement("div");
-    warn.className = "warn";
-    warn.style.padding = "8px 4px";
-    warn.textContent = `⚠ 缺少 ${data.missingAssets.length} 個資源`;
-    warn.title = data.missingAssets.join("\n");
-    box.appendChild(warn);
+  // 選取用路徑對回來（檔案被改過的話 id 可能變了）
+  if (state.sel) {
+    const again = state.byPath.get(state.sel.path);
+    if (again) {
+      state.sel.id = again.node.id;
+      markSelectedRow();
+      loadInspector();
+    } else {
+      clearSelection("這個節點已經不在了（檔案被改過）");
+    }
   }
+  if (state.hover !== null && !state.byId.has(state.hover)) state.hover = null;
+  drawOverlay();
 }
 
-function renderNode(node, open, isRoot) {
+function countNodes(tree) {
+  let n = 0;
+  const stack = [tree];
+  while (stack.length) { const t = stack.pop(); n++; for (const c of t.children || []) stack.push(c); }
+  state.total = n;
+}
+
+const DRAWN_TYPES = new Set(["Button", "CheckBox", "LoadingBar", "Slider", "Text",
+                             "TextBMFont", "TextField", "TextAtlas", "Sprite", "ImageView"]);
+
+function renderNode(node, parentId, ctx) {
   const wrap = document.createElement("div");
   const row = document.createElement("div");
   row.className = "node" + (node.visible ? "" : " hidden");
+  const entry = { node, parentId, row, wrap, holder: null, toggle: null, issue: null };
+  state.flat.push(entry);
+  state.byId.set(node.id, entry);
+  if (!state.byPath.has(node.path)) state.byPath.set(node.path, entry);
 
   const kids = node.children || [];
   const toggle = document.createElement("span");
   toggle.className = "toggle";
   toggle.textContent = kids.length ? "▾" : "";
   row.appendChild(toggle);
+  entry.toggle = toggle;
 
   // 眼睛鈕：預設照 .csd，點擊在「強制顯示 / 強制隱藏 / 回復預設」間循環
   const eye = document.createElement("span");
@@ -477,16 +792,18 @@ function renderNode(node, open, isRoot) {
   label.className = "label";
   const rect = node.screenRect;
   label.innerHTML =
-    `${escapeHTML(node.name || "(無名)")} <span class="kind">${node.type}</span>` +
+    `${escapeHTML(node.name || "(無名)")} <span class="kind">${escapeHTML(node.type)}</span>` +
     `<span class="dim"> ${Math.round(rect[2])}×${Math.round(rect[3])}</span>`;
   row.appendChild(label);
-  row.title = [
-    node.path, `類型 ${node.type}`, `位置 ${node.position.join(", ")}`,
-    `畫面 x=${rect[0].toFixed(0)} y=${rect[1].toFixed(0)}`,
-    node.source ? `資源 ${node.source}` : "",
-    node.text ? `文字 ${node.text}` : "",
-    node.document ? `引用 ${node.document}` : "",
-  ].filter(Boolean).join("\n");
+  const issue = document.createElement("span");
+  issue.className = "issue";
+  row.appendChild(issue);
+  entry.issue = issue;
+  row.title = [node.path, node.document ? `引用 ${node.document}` : "", "點一下看全部屬性"]
+    .filter(Boolean).join("\n");
+  row.onclick = () => selectNode(node.id, false);
+  row.onmouseenter = () => { state.hover = node.id; drawOverlay(); };
+  row.onmouseleave = () => { if (state.hover === node.id) { state.hover = null; drawOverlay(); } };
   wrap.appendChild(row);
 
   if (kids.length) {
@@ -494,10 +811,16 @@ function renderNode(node, open, isRoot) {
     holder.className = "kids";
     holder.dataset.path = node.path;
     holder.style.marginLeft = "13px";
-    if (!isRoot && open.size && !open.has(node.path)) holder.classList.add("collapsed");
-    for (const child of kids) holder.appendChild(renderNode(child, open, false));
+    entry.holder = holder;
+    let collapsed;
+    if (parentId < 0 || ctx.expandAll) collapsed = false;
+    else if (ctx.fresh) collapsed = node.depth >= 2;
+    else collapsed = ctx.known.has(node.path) ? !ctx.open.has(node.path) : false;
+    if (collapsed) { holder.classList.add("collapsed"); toggle.textContent = "▸"; }
+    for (const child of kids) holder.appendChild(renderNode(child, node.id, ctx));
     wrap.appendChild(holder);
-    toggle.onclick = () => {
+    toggle.onclick = (e) => {
+      e.stopPropagation();
       holder.classList.toggle("collapsed");
       toggle.textContent = holder.classList.contains("collapsed") ? "▸" : "▾";
     };
@@ -505,16 +828,370 @@ function renderNode(node, open, isRoot) {
   return wrap;
 }
 
-const escapeHTML = (s) => s.replace(/[&<>"]/g, c =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function expand(entry) {
+  if (entry && entry.holder) {
+    entry.holder.classList.remove("collapsed");
+    entry.toggle.textContent = "▾";
+  }
+}
+
+// 節點搜尋：顯示名稱／類型符合的節點與它們的祖先
+function filterTree() {
+  const needle = (el("nodeSearch").value || "").trim().toLowerCase();
+  if (!state.flat.length) return;
+  if (!needle) {
+    for (const e of state.flat) { e.wrap.style.display = ""; e.row.classList.remove("match"); }
+    return;
+  }
+  const keep = new Set();
+  let hits = 0;
+  for (const e of state.flat) {
+    const n = e.node;
+    const match = (n.name || "").toLowerCase().includes(needle) ||
+                  (n.type || "").toLowerCase() === needle;
+    e.row.classList.toggle("match", match);
+    if (!match) continue;
+    hits++;
+    for (let id = n.id; id >= 0 && !keep.has(id); id = state.byId.get(id).parentId) {
+      keep.add(id);
+      if (id !== n.id) expand(state.byId.get(id));
+    }
+  }
+  for (const e of state.flat) e.wrap.style.display = keep.has(e.node.id) ? "" : "none";
+  el("inspInfo").textContent = hits ? `找到 ${hits} 個` : "找不到符合的節點";
+}
 
 function refreshVisibility() {
   el("visReset").disabled = state.vis.size === 0;
   el("visReset").textContent = state.vis.size
     ? `重設可視 (${state.vis.size})` : "重設可視";
+  cancelPrefetch();
   setFrame(state.frame);      // 快取鍵含覆寫，會自動取新圖
   loadTree();
-  prefetch();
+}
+
+// ---------------------------------------------------------------- 選取與畫面上的框
+function selectNode(id, reveal) {
+  const entry = state.byId.get(id);
+  if (!entry) return;
+  state.sel = { id, path: entry.node.path };
+  markSelectedRow();
+  if (reveal) {
+    for (let p = entry.parentId; p >= 0; p = state.byId.get(p).parentId) expand(state.byId.get(p));
+    if (entry.wrap.style.display === "none") { el("nodeSearch").value = ""; filterTree(); }
+    if (entry.row.scrollIntoView) entry.row.scrollIntoView({ block: "nearest" });
+  }
+  updateSelChip();
+  drawOverlay();
+  loadInspector();
+}
+
+function clearSelection(reason) {
+  state.sel = null;
+  markSelectedRow();
+  updateSelChip();
+  drawOverlay();
+  showInspectorHint(reason);
+}
+
+function markSelectedRow() {
+  for (const e of state.flat) e.row.classList.toggle("sel", !!state.sel && e.node.id === state.sel.id);
+}
+
+function updateSelChip() {
+  const chip = el("selChip");
+  const entry = state.sel ? state.byId.get(state.sel.id) : null;
+  if (!entry) { chip.hidden = true; return; }
+  chip.hidden = false;
+  chip.innerHTML = `選取：${escapeHTML(entry.node.name || "(無名)")} ` +
+    `<span class="stat">${escapeHTML(entry.node.type)}</span> <span class="x" title="取消選取 (Esc)">✕</span>`;
+  const x = chip.querySelector(".x");
+  if (x) x.onclick = () => clearSelection();
+}
+
+function zoomFactor() {
+  const z = zoomLevel();
+  // 版面座標是伺服器算的畫布像素；圖若被降尺度過（超大畫布）兩者一樣大，直接乘縮放
+  const view = el("view");
+  if (view.naturalWidth && state.imageSize && state.imageSize[0]) {
+    return z * view.naturalWidth / state.imageSize[0];
+  }
+  return z;
+}
+
+function drawOverlay() {
+  placeBox(el("selBox"), el("selTag"), state.sel ? state.byId.get(state.sel.id) : null, true);
+  const hover = state.hover !== null && (!state.sel || state.hover !== state.sel.id)
+    ? state.byId.get(state.hover) : null;
+  placeBox(el("hoverBox"), el("hoverTag"), hover, false);
+}
+
+function placeBox(box, tag, entry, isSel) {
+  if (!entry || el("view").hidden || !state.imageSize) { box.style.display = "none"; return; }
+  const z = zoomFactor();
+  const [x, y, w, h] = entry.node.screenRect;
+  box.style.display = "block";
+  box.style.left = (x * z) + "px";
+  box.style.top = (y * z) + "px";
+  box.style.width = Math.max(2, w * z) + "px";
+  box.style.height = Math.max(2, h * z) + "px";
+  const n = entry.node;
+  tag.textContent = `${n.name || "(無名)"} · ${n.type} · ${Math.round(w)}×${Math.round(h)}` +
+    (n.visible ? "" : " · 這一格看不到");
+  tag.classList.toggle("below", y * z < 20);     // 貼著圖的上緣時改放框的下方
+  // 標籤超出圖的右緣就改成靠右對齊，免得被切掉
+  tag.classList.remove("right");
+  if (tag.offsetWidth && x * z + tag.offsetWidth > el("view").clientWidth) tag.classList.add("right");
+  if (isSel) box.classList.toggle("ghost", !n.visible);
+}
+
+// 畫面上某一點底下的節點，最上層的在前面。
+// 有畫東西的（圖、文字、按鈕…）優先：不然點哪裡都會點到撐滿畫面的容器。
+function nodesAt(px, py) {
+  const hits = [];
+  for (const e of state.flat) {
+    const n = e.node, r = n.screenRect;
+    if (!n.visible || r[2] < 1 || r[3] < 1) continue;
+    if (px < r[0] || py < r[1] || px > r[0] + r[2] || py > r[1] + r[3]) continue;
+    hits.push(e);
+  }
+  const drawn = (e) => !!(e.node.source || e.node.text) || DRAWN_TYPES.has(e.node.type);
+  return [...hits.filter(drawn).reverse(), ...hits.filter(e => !drawn(e)).reverse()];
+}
+
+function pointOnImage(e) {
+  const z = zoomFactor();
+  return [e.offsetX / z, e.offsetY / z];
+}
+
+el("view").onclick = (e) => {
+  if (!state.flat.length) return;
+  const [px, py] = pointOnImage(e);
+  const hits = nodesAt(px, py);
+  if (!hits.length) { clearSelection(); return; }
+  let pick = hits[0];
+  const last = state.lastClick;
+  // 同一點再點一下：換成底下那一層（疊在一起的元件靠這個一層層選）
+  if (last && Math.abs(last.x - e.clientX) < 4 && Math.abs(last.y - e.clientY) < 4 && state.sel) {
+    const i = hits.findIndex(h => h.node.id === state.sel.id);
+    if (i >= 0) pick = hits[(i + 1) % hits.length];
+  }
+  state.lastClick = { x: e.clientX, y: e.clientY };
+  selectNode(pick.node.id, true);
+};
+
+let hoverFrame = 0;
+el("view").onmousemove = (e) => {
+  if (hoverFrame || !state.flat.length) return;
+  const point = pointOnImage(e);
+  hoverFrame = requestAnimationFrame(() => {
+    hoverFrame = 0;
+    const hit = nodesAt(point[0], point[1])[0];
+    const id = hit ? hit.node.id : null;
+    if (id !== state.hover) { state.hover = id; drawOverlay(); }
+  });
+};
+el("view").onmouseleave = () => { state.hover = null; drawOverlay(); };
+
+function locateSelection() {
+  const entry = state.sel && state.byId.get(state.sel.id);
+  if (!entry) return;
+  const z = zoomFactor(), [x, y, w, h] = entry.node.screenRect;
+  const stage = el("stage"), frame = el("frame");
+  stage.scrollTo({
+    left: frame.offsetLeft + (x + w / 2) * z - stage.clientWidth / 2,
+    top: frame.offsetTop + (y + h / 2) * z - stage.clientHeight / 2,
+    behavior: "smooth",
+  });
+}
+
+// ---------------------------------------------------------------- 屬性面板
+function showInspectorHint(reason) {
+  el("inspector").innerHTML = `<div class="hint">${reason ? `<span class="warn">${escapeHTML(reason)}</span><br>` : ""}` +
+    "點畫面上的元件，或上面階層裡的節點，這裡會列出它的全部設定：" +
+    "位置、大小、顏色、用到的圖與字型（找不找得到）、文字、動畫，以及 .csd 裡寫的原始內容。</div>";
+  el("inspInfo").textContent = "";
+}
+
+let inspSeq = 0;
+async function loadInspector() {
+  if (!state.sel || !state.file) return;
+  const seq = ++inspSeq;
+  const q = layoutQuery({ id: String(state.sel.id), path: state.sel.path });
+  let data = null;
+  try { data = await fetch("/api/node?" + q).then(r => r.json()); } catch { data = null; }
+  if (seq !== inspSeq || !state.sel) return;
+  if (!data || data.error) {
+    el("inspector").innerHTML =
+      `<div class="hint warn">${escapeHTML((data && data.error) || "讀不到這個節點的屬性")}</div>`;
+    return;
+  }
+  renderInspector(data);
+}
+
+const STATUS_ICON = { ok: "✓", missing: "✗", error: "✗", warn: "⚠", default: "◇" };
+const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
+
+function rowHTML(r) {
+  let v = "";
+  if (r.status && STATUS_ICON[r.status]) v += `<span class="st-${r.status}">${STATUS_ICON[r.status]}</span> `;
+  if (r.color && COLOR_RE.test(r.color)) v += `<span class="swatch" style="background:${r.color}"></span>`;
+  v += `<span class="${r.mono ? "mono" : ""}${r.pre ? " pre" : ""}">${escapeHTML(r.v)}</span>`;
+  if (r.anim) v += `<span class="pill" title="這一格的值被動畫改過">動畫</span>`;
+  let note = "";
+  if (r.base !== undefined) note += `.csd 寫的是 ${escapeHTML(r.base)}`;
+  if (r.note) note += (note ? "　" : "") + escapeHTML(r.note);
+  const dim = r.dim ? " dim" : "";
+  return `<div class="k${dim}">${escapeHTML(r.k)}</div>` +
+         `<div class="v${dim}">${v}${note ? `<span class="note">${note}</span>` : ""}</div>`;
+}
+
+function sectionHTML(title, body) {
+  const key = title.split("（")[0];
+  return `<details class="sec" data-key="${escapeAttr(key)}"${state.closed.has(key) ? "" : " open"}>` +
+         `<summary>${escapeHTML(title)}</summary>${body}</details>`;
+}
+
+function renderInspector(d) {
+  const entry = state.byId.get(d.id);
+  const issues = (state.check && state.check.byNode && state.check.byNode[d.path]) || [];
+  const typeRow = d.sections[0] && d.sections[0].rows.find(r => r.k === "類型");
+  let html = `<div class="ihead"><div class="iname">${escapeHTML(d.name || "(無名)")}</div>` +
+    `<div class="itype">${escapeHTML(typeRow ? typeRow.v : d.type)}</div>` +
+    `<div class="iact"><button id="btnLocate" title="把畫面捲到這個元件">在畫面上定位</button>` +
+    `<button id="btnCopy" title="複製節點路徑，可以貼給 AI 或 csdview 指令">複製路徑</button></div></div>`;
+  if (issues.length) {
+    const onlyWarn = issues.every(i => i.level !== "error");
+    html += `<div class="issues${onlyWarn ? " warnonly" : ""}">` + issues.map(i =>
+      `<div class="st-${i.level}">${STATUS_ICON[i.level] || "⚠"} <b>${escapeHTML(i.title)}</b>` +
+      `　<span class="mono">${escapeHTML(i.detail)}</span></div>`).join("") + "</div>";
+  }
+  for (const sec of d.sections) {
+    html += sectionHTML(sec.title, `<div class="kv">${sec.rows.map(rowHTML).join("")}</div>`);
+  }
+  const attrs = Object.entries((d.raw && d.raw.attrs) || {});
+  const elements = Object.entries((d.raw && d.raw.elements) || {});
+  if (attrs.length || elements.length) {
+    let raw = '<div class="raw mono">';
+    for (const [k, v] of attrs) raw += `<div class="k">${escapeHTML(k)}</div><div class="v">${escapeHTML(v)}</div>`;
+    for (const [tag, a] of elements) {
+      const text = Object.entries(a).map(([k, v]) => `${k}=${v}`).join("  ") || "(無屬性)";
+      raw += `<div class="k">&lt;${escapeHTML(tag)}&gt;</div><div class="v">${escapeHTML(text)}</div>`;
+    }
+    raw += "</div>";
+    html += sectionHTML(`原始設定（.csd 裡寫的全部內容，${attrs.length + elements.length} 項）`, raw);
+  }
+  const box = el("inspector");
+  const scroll = box.scrollTop;
+  box.innerHTML = html;
+  box.scrollTop = scroll;
+  for (const det of box.querySelectorAll("details.sec")) {
+    det.ontoggle = () => {
+      if (det.open) state.closed.delete(det.dataset.key); else state.closed.add(det.dataset.key);
+    };
+  }
+  el("btnLocate").onclick = locateSelection;
+  el("btnCopy").onclick = () => {
+    const done = () => flashStatus("已複製節點路徑");
+    if (navigator.clipboard) navigator.clipboard.writeText(d.path).then(done, () => {});
+  };
+  el("inspInfo").textContent = entry && entry.node.document ? `引用 ${entry.node.document}` : "";
+}
+
+// ---------------------------------------------------------------- 檢查（同 csdview doctor）
+// 開檔與檔案被改過時各跑一次；伺服器依檔案指紋快取，一次只跑一份，不會疊起來吃 CPU。
+let checkSeq = 0;
+async function loadCheck() {
+  if (!state.file) return;
+  const seq = ++checkSeq, file = state.file;
+  setCheckChip("busy");
+  let data = null;
+  try {
+    data = await fetch("/api/check?file=" + encodeURIComponent(file)).then(r => r.json());
+  } catch { data = null; }
+  if (seq !== checkSeq || file !== state.file) return;
+  if (!data || data.error || !data.groups) {
+    state.check = null;
+    setCheckChip("fail", data && data.error);
+    return;
+  }
+  state.check = data;
+  setCheckChip(data.groups.length ? "issues" : "ok");
+  renderCheckPanel();
+  markIssueRows();
+  if (state.sel) loadInspector();
+}
+
+function setCheckChip(kind, message) {
+  const chip = el("checkChip");
+  chip.hidden = false;
+  chip.onclick = null;
+  chip.className = "chip";
+  const c = state.check;
+  if (kind === "busy") {
+    chip.className = "chip busy"; chip.textContent = "⏳ 檢查中…";
+    chip.title = "在背景檢查缺少的資源、圖集、尺寸、文字爆框與版面，不會擋住畫面";
+  } else if (kind === "ok") {
+    chip.className = "chip ok"; chip.textContent = "✓ 檢查通過";
+    chip.title = "缺少的資源、圖集設定、尺寸 0 的元件、文字超出框、版面過期：都沒有問題\n" +
+      `（檢查了第 ${c.framesProbed.join("、")} 格，結果同 csdview doctor）`;
+  } else if (kind === "issues") {
+    const parts = [];
+    if (c.errors) parts.push(`✗ ${c.errors} 個錯誤`);
+    if (c.warnings) parts.push(`⚠ ${c.warnings} 個警告`);
+    chip.className = "chip click " + (c.errors ? "err" : "warn");
+    chip.textContent = parts.join("　") + "　▾";
+    chip.title = "點一下看是哪些節點";
+    chip.onclick = () => { el("checkPanel").hidden = !el("checkPanel").hidden; };
+  } else {
+    chip.className = "chip warn"; chip.textContent = "檢查失敗";
+    chip.title = message || "伺服器沒有回應";
+  }
+}
+
+function renderCheckPanel() {
+  const c = state.check, panel = el("checkPanel");
+  if (!c || !c.groups.length) { panel.hidden = true; panel.innerHTML = ""; return; }
+  let html = `<div class="cp-head"><b>檢查結果</b><span class="stat">檢查了第 ${c.framesProbed.join("、")} 格 · ` +
+    `結果同 csdview doctor · ${(c.ms / 1000).toFixed(1)} 秒</span><span class="spacer"></span>` +
+    `<button id="cpClose">收起</button></div>`;
+  for (const g of c.groups) {
+    html += `<div class="cp-group"><div class="cp-title st-${g.level}">${STATUS_ICON[g.level]} ${escapeHTML(g.title)}` +
+      `<span class="count">${g.items.length}</span></div><div class="cp-hint">${escapeHTML(g.hint)}</div>`;
+    for (const item of g.items) {
+      const one = g.kind !== "missingAssets" && item.nodes.length === 1;
+      html += `<div class="cp-item${one ? " link" : ""}"${one ? ` data-path="${escapeAttr(item.nodes[0])}"` : ""}>` +
+        `<span class="mono">${escapeHTML(item.text)}</span><span class="cp-detail">${escapeHTML(item.detail)}</span>`;
+      if (!one && item.nodes.length) {
+        html += `<div class="cp-nodes">` + item.nodes.map(p =>
+          `<span data-path="${escapeAttr(p)}" title="${escapeAttr(p)}">${escapeHTML(p.split("/").pop())}</span>`).join("") + "</div>";
+      }
+      html += "</div>";
+    }
+    html += "</div>";
+  }
+  panel.innerHTML = html;
+  for (const link of panel.querySelectorAll("[data-path]")) {
+    link.onclick = (e) => {
+      e.stopPropagation();
+      const entry = state.byPath.get(link.dataset.path);
+      if (entry) { selectNode(entry.node.id, true); locateSelection(); }
+      else flashStatus("這個節點在目前這一格的階層裡找不到");
+    };
+  }
+  el("cpClose").onclick = () => { panel.hidden = true; };
+}
+
+function markIssueRows() {
+  const byNode = (state.check && state.check.byNode) || {};
+  for (const e of state.flat) {
+    const list = byNode[e.node.path];
+    if (!list || !list.length) { e.issue.textContent = ""; continue; }
+    const bad = list.some(i => i.level === "error");
+    e.issue.textContent = bad ? "✗" : "⚠";
+    e.issue.className = "issue " + (bad ? "st-error" : "st-warn");
+    e.issue.title = list.map(i => i.title).join("\n");
+  }
 }
 
 // ---------------------------------------------------------------- 自動更新
@@ -583,9 +1260,10 @@ async function checkForChanges() {
 
 // nonce 讓網址一定改變，連素材（貼圖／字型）被換掉的情況也能重抓
 async function reloadCurrent(reason, autoRetry) {
+  let ok = false;
   state.nonce = Date.now();
   state.cache.clear();
-  if (state.prefetch) state.prefetch.cancelled = true;
+  cancelPrefetch();
 
   // 動畫片段可能整個換了，重新讀一次基本資訊
   try {
@@ -594,19 +1272,8 @@ async function reloadCurrent(reason, autoRetry) {
     if (info && !info.error) {
       ok = true;
       state.info = info;
-      const keep = el("anim").value;
+      fillAnimations(info, el("anim").value);
       const select = el("anim");
-      select.innerHTML = "";
-      const full = document.createElement("option");
-      full.value = ""; full.textContent = `整條時間軸 (0~${info.duration})`;
-      select.appendChild(full);
-      for (const a of info.animations) {
-        const opt = document.createElement("option");
-        opt.value = a.name;
-        opt.textContent = `${a.name} (${a.start}~${a.end})`;
-        select.appendChild(opt);
-      }
-      select.value = info.animations.some(a => a.name === keep) ? keep : "";
       const clip = info.animations.find(a => a.name === select.value);
       state.anim = select.value;
       state.start = clip ? clip.start : 0;
@@ -614,6 +1281,7 @@ async function reloadCurrent(reason, autoRetry) {
       const bar = el("timeline");
       bar.min = state.start; bar.max = Math.max(state.start, state.end);
       el("play").disabled = state.end <= state.start;
+      showFileMeta();
     }
   } catch {
     // 自動更新時失敗就整輪放棄，state.info 維持舊值，下一次輪詢會再試一次
@@ -623,7 +1291,7 @@ async function reloadCurrent(reason, autoRetry) {
 
   setFrame(Math.max(state.start, Math.min(state.end, state.frame)));
   loadTree();
-  prefetch();
+  loadCheck();
   flashStatus(reason);
   return true;
 }
@@ -644,21 +1312,33 @@ el("anim").onchange = () => { stopPlay(); applyAnim(); };
 el("timeline").oninput = (e) => { stopPlay(); setFrame(+e.target.value); };
 el("frameNum").oninput = (e) => { stopPlay(); setFrame(+e.target.value); };
 el("zoom").onchange = applyZoom;
+window.onresize = () => { if (el("zoom").value === "fit") applyZoom(); };
+el("nodeSearch").oninput = filterTree;
 el("visReset").onclick = () => { state.vis.clear(); refreshVisibility(); };
-el("reloadNow").onclick = () => reloadCurrent("已重新整理");
+el("reloadNow").onclick = async () => {
+  // 先請伺服器丟掉這個檔案的貼圖／字型快取，不然換掉的圖還是舊的
+  if (state.file) {
+    await fetch("/api/reset?file=" + encodeURIComponent(state.file)).catch(() => null);
+  }
+  reloadCurrent("已重新整理");
+};
 el("autoReload").onchange = () => { if (el("autoReload").checked) checkForChanges(); };
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     checkForChanges();     // 切回分頁時立刻補一次
     loadFiles(true);       // 新建的 .csd 不必等 F5
   }
+  kickPrefetch();          // 回到前景繼續預抓；切到背景時它會自己停
 });
 for (const id of ["annotate", "particles", "bg", "fullbounds"]) {
-  el(id).onchange = () => { setFrame(state.frame); prefetch(); };
+  el(id).onchange = () => { cancelPrefetch(); setFrame(state.frame); };
 }
 
 document.onkeydown = (e) => {
-  if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
+  if (e.target.tagName === "INPUT" && e.target.type !== "range") {
+    if (e.code === "Escape" && e.target.id === "nodeSearch") { e.target.value = ""; filterTree(); }
+    return;
+  }
   if (!state.file) return;
   if (e.code === "Space") { e.preventDefault(); state.playing ? stopPlay() : startPlay(); }
   // 這些鍵都要 preventDefault：焦點若在時間軸滑桿上，瀏覽器會再自己動一次，
@@ -671,6 +1351,9 @@ document.onkeydown = (e) => {
     e.preventDefault(); stopPlay(); setFrame(state.start);
   } else if (e.code === "End") {
     e.preventDefault(); stopPlay(); setFrame(state.end);
+  } else if (e.code === "Escape") {
+    if (!el("checkPanel").hidden) el("checkPanel").hidden = true;
+    else if (state.sel) clearSelection();
   }
 };
 

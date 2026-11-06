@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -16,9 +17,9 @@ from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import anim, parser as csd_parser
-from .assets import SKIP_DIRS, library_for
-from .render import RenderOptions, Renderer
+from . import anim, details, parser as csd_parser
+from .assets import SKIP_DIRS, AssetLibrary, library_for
+from .render import NodeReport, RenderOptions, Renderer, RenderResult
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -92,10 +93,24 @@ class ViewerState:
         self.cache = _Cache()
         self._docs: OrderedDict[str, tuple[tuple[int, int], object]] = OrderedDict()
         self._doc_limit = 64
-        self._renderers: dict[tuple, Renderer] = {}
+        # 依「檔案 + 算圖選項」快取 Renderer，但素材庫（解碼好的貼圖）是一個檔案一份、
+        # 所有選項共用。原本每種選項組合各建一份素材庫：換個背景色就把整份貼圖重新解碼，
+        # 最多 32 份並存，每份最多 256 張圖——大檔切幾次選項就是好幾百 MB。
+        self._renderers: OrderedDict[tuple, Renderer] = OrderedDict()
+        self._renderer_limit = 8
+        self._libraries: OrderedDict[str, AssetLibrary] = OrderedDict()
+        self._library_limit = 6
         self._lock = threading.Lock()
-        # 前端會同時預抓多格，大檔一次渲染就要幾百 MB，不設限會把記憶體吃爆
+        # 同時最多 3 個渲染（大檔一次就要幾百 MB），其中背景預抓最多佔 2 個：
+        # 永遠留一個給使用者正在看的那一格，拖時間軸不必排在預抓後面。
         self._render_slots = threading.Semaphore(3)
+        self._prefetch_lane = threading.Semaphore(2)
+        # 節點樹、屬性面板會對同一格連續要好幾次 layout，算一次就好
+        self._layouts: OrderedDict[tuple, RenderResult] = OrderedDict()
+        self._layout_limit = 6
+        # 檢查（doctor）一次只跑一份；結果依檔案指紋快取，檔案沒改就不重算
+        self._checks: OrderedDict[tuple, dict] = OrderedDict()
+        self._check_lock = threading.Lock()
         self._files_cache: tuple[float, list[dict]] | None = None
         self._files_lock = threading.Lock()
         self._files_ttl = 2.0
@@ -164,6 +179,26 @@ class ViewerState:
         """限制同時進行的渲染數量。"""
         return self._render_slots
 
+    def prefetch_lane(self):
+        """背景預抓多一道限制，見 __init__。"""
+        return self._prefetch_lane
+
+    def library(self, full: str) -> AssetLibrary:
+        """一個 .csd 一份素材庫，所有算圖選項共用。已經拿著 self._lock 時改用 _library_locked。"""
+        with self._lock:
+            return self._library_locked(full)
+
+    def _library_locked(self, full: str) -> AssetLibrary:
+        found = self._libraries.get(full)
+        if found is not None:
+            self._libraries.move_to_end(full)
+            return found
+        made = library_for(full, self.project_root)
+        self._libraries[full] = made
+        while len(self._libraries) > self._library_limit:
+            self._libraries.popitem(last=False)
+        return made
+
     def renderer(self, full: str, options: RenderOptions) -> Renderer:
         """依檔案與選項快取 Renderer，讓圖片／九宮格／文字光柵的快取能跨請求重用。"""
         key = (full, options.scale, options.background, options.annotate,
@@ -173,13 +208,96 @@ class ViewerState:
         with self._lock:
             found = self._renderers.get(key)
             if found is not None:
+                self._renderers.move_to_end(key)
                 return found
-            # 建在鎖裡：兩條請求同時未命中時不會做出兩份 AssetLibrary。
-            if len(self._renderers) > 32:
-                self._renderers.clear()
-            made = Renderer(library_for(full, self.project_root), options)
+            # 建在鎖裡：兩條請求同時未命中時不會做出兩份 Renderer。
+            made = Renderer(self._library_locked(full), options)
             self._renderers[key] = made
+            while len(self._renderers) > self._renderer_limit:
+                self._renderers.popitem(last=False)
             return made
+
+    def reset(self, full: str) -> None:
+        """丟掉這個檔案的素材庫與 Renderer，下一次會重讀貼圖與字型（「重新整理」用）。"""
+        with self._lock:
+            self._libraries.pop(full, None)
+            for key in [k for k in self._renderers if k[0] == full]:
+                del self._renderers[key]
+            for key in [k for k in self._layouts if k[0] == full]:
+                del self._layouts[key]
+            for key in [k for k in self._checks if k[0] == full]:
+                del self._checks[key]
+
+    def layout(self, full: str, options: RenderOptions, frame: float, animation: str,
+               visibility: dict[str, bool]) -> tuple[object, RenderResult]:
+        """只算版面（不畫像素）的結果，給節點樹與屬性面板共用。"""
+        options.layout_only = True
+        # 指紋先取、再解析：解析途中檔案被換掉的話，新內容會被標上舊指紋，
+        # 下一次用新指紋查不到就重算——方向是安全的（同 document() 的理由）。
+        key = (full, _version(full), frame, animation,
+               tuple(sorted(visibility.items())), options.full_bounds,
+               options.draw_particles, options.inner_mode)
+        doc = self.document(full)
+        with self._lock:
+            found = self._layouts.get(key)
+            if found is not None:
+                self._layouts.move_to_end(key)
+                return doc, found
+        result = self.renderer(full, options).render(doc, frame, animation, visibility)
+        with self._lock:
+            self._layouts[key] = result
+            while len(self._layouts) > self._layout_limit:
+                self._layouts.popitem(last=False)
+        return doc, result
+
+    def check(self, full: str) -> dict:
+        """跑 doctor 的全部檢查。結果跟 `csdview doctor` 完全一樣（同一個函式）。
+
+        用一份新的素材庫：「缺少的資源」是素材庫在載入時記下來的，
+        跟畫面共用的那份會混進使用者看過的其他影格，就跟 CLI 對不上了。
+        """
+        from .cli import diagnose
+
+        key = (full, _version(full))
+        with self._lock:
+            found = self._checks.get(key)
+            if found is not None:
+                return found
+        with self._check_lock:              # 一次一份，連續改檔也不會疊起來跑
+            with self._lock:
+                found = self._checks.get(key)
+                if found is not None:
+                    return found
+            started = time.perf_counter()
+            doc = self.document(full)
+            renderer = Renderer(library_for(full, self.project_root),
+                                RenderOptions(layout_only=True, full_bounds=True))
+            payload, last = diagnose(doc, renderer)
+            summary = details.check_summary(payload, [r for r, _p in numbered(last)])
+            summary["ms"] = round((time.perf_counter() - started) * 1000)
+            summary["mtime"], summary["size"] = key[1]
+        with self._lock:
+            self._checks[key] = summary
+            while len(self._checks) > 16:
+                self._checks.popitem(last=False)
+        return summary
+
+
+def numbered(result: RenderResult) -> list[tuple[NodeReport, int]]:
+    """節點樹前序展開：(節點, 父節點的編號)，根的父節點是 -1。
+
+    編號就是網頁上的節點 id。前序跟渲染時 reports 的順序一致，
+    也就是後面的蓋在前面上——點畫面選節點時靠這個挑最上層的。
+    """
+    order: list[tuple[NodeReport, int]] = []
+    stack = [(result.root, -1)] if result.root else []
+    while stack:
+        report, parent = stack.pop()
+        index = len(order)
+        order.append((report, parent))
+        for child in reversed(report.children):
+            stack.append((child, index))
+    return order
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -251,6 +369,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._info(query))
             elif route == "/api/tree":
                 self._json(self._tree(query))
+            elif route == "/api/node":
+                self._node(query)
+            elif route == "/api/check":
+                full = self.state.resolve(query.get("file", ""))
+                self._json(self.state.check(full))
+            elif route == "/api/reset":
+                self.state.reset(self.state.resolve(query.get("file", "")))
+                self._json({"ok": True})
             elif route == "/api/frame":
                 self._frame(query)
             else:
@@ -266,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
     def _info(self, query) -> dict:
         full = self.state.resolve(query.get("file", ""))
         doc = self.state.document(full)
-        library = library_for(full, self.state.project_root)
+        library = self.state.library(full)
         return {
             "file": query.get("file", ""),
             "name": doc.name,
@@ -323,34 +449,80 @@ class Handler(BaseHTTPRequestHandler):
                 out[path] = True
         return out
 
-    def _tree(self, query) -> dict:
+    def _layout(self, query):
         full = self.state.resolve(query.get("file", ""))
-        doc = self.state.document(full)
-        options = self._options(query)
-        options.layout_only = True
-        renderer = self.state.renderer(full, options)
-        frame = float(query.get("frame", 0))
-        result = renderer.render(doc, frame, query.get("anim", ""),
-                                 self._visibility(query))
+        doc, result = self.state.layout(full, self._options(query),
+                                        float(query.get("frame", 0)),
+                                        query.get("anim", ""), self._visibility(query))
+        return full, doc, result
+
+    def _tree(self, query) -> dict:
+        _full, _doc, result = self._layout(query)
         size = result.canvas_size or result.image.size
+
+        # 每個節點帶一個 id（前序編號），屬性面板用它指名節點：
+        # 名稱路徑可能重複（同一層兩個同名節點），編號不會。
+        counter = [0]
+
+        def to_dict(report: NodeReport) -> dict:
+            data = report.to_dict(with_children=False)
+            data["id"] = counter[0]
+            counter[0] += 1
+            if report.children:
+                data["children"] = [to_dict(c) for c in report.children]
+            return data
+
         return {
-            "frame": frame,
+            "frame": float(query.get("frame", 0)),
             "imageSize": list(size),
-            "tree": result.root.to_dict() if result.root else None,
+            "tree": to_dict(result.root) if result.root else None,
             "missingAssets": result.missing,
             "events": result.events,
         }
 
+    def _node(self, query) -> None:
+        """屬性面板：一個節點在這一格的全部設定。"""
+        full, doc, result = self._layout(query)
+        order = numbered(result)
+        path = query.get("path", "")
+        try:
+            index = int(query.get("id", -1))
+        except ValueError:
+            index = -1
+        # id 是上一次節點樹的編號；檔案剛被改過的話可能已經對不上，改用路徑找
+        if not (0 <= index < len(order)) or order[index][0].path != path:
+            index = next((i for i, (r, _p) in enumerate(order) if r.path == path), -1)
+        if index < 0:
+            self._json({"error": "找不到這個節點（檔案可能剛被改過）"}, 404)
+            return
+        report = order[index][0]
+        chain, parent = [], order[index][1]
+        while parent >= 0:
+            chain.append(order[parent][0])
+            parent = order[parent][1]
+        chain.reverse()
+
+        name = query.get("anim", "")
+        clip = doc.clip(name) if name else None
+        span = (clip.start, clip.end) if clip else (0, doc.duration)
+        body = details.node_details(report, chain, self.state.library(full),
+                                    self._visibility(query), span, doc)
+        self._json({"id": index, "path": report.path, "name": report.name,
+                    "type": report.ctype.replace("ObjectData", ""), **body})
+
     def _frame(self, query) -> None:
         rel = query.get("file", "")
         path = self.state.resolve(rel)
+        # pf=1 是背景預抓。不進快取鍵：同一格預抓與直接要的是同一張圖。
+        prefetch = query.pop("pf", "0") == "1"
         # 直接拿整組查詢參數當快取鍵：先前是逐一列舉，新增算圖參數時
         # 很容易忘了同步，結果讀到舊圖（新參數等於沒作用）
         key = (path, _version(path), tuple(sorted(query.items())))
 
         cached = self.state.cache.get(key)
         if cached is None:
-            with self.state.render_slot():
+            lane = self.state.prefetch_lane() if prefetch else contextlib.nullcontext()
+            with lane, self.state.render_slot():
                 cached = self.state.cache.get(key)      # 排隊期間可能已被別人算好
                 if cached is None:
                     doc = self.state.document(path)
@@ -359,7 +531,9 @@ class Handler(BaseHTTPRequestHandler):
                                              query.get("anim", ""),
                                              self._visibility(query))
                     buffer = io.BytesIO()
-                    result.image.save(buffer, "PNG")
+                    # 壓縮等級 3：大圖（4003x3146）編碼 430 -> 267 ms，檔案大約多兩成。
+                    # 本機傳輸，省下的是 CPU。
+                    result.image.save(buffer, "PNG", compress_level=3)
                     cached = buffer.getvalue()
                     self.state.cache.put(key, cached)
         self._send(200, cached, "image/png", cache=True)
@@ -399,17 +573,45 @@ def _bind(port: int, tries: int = 20):
                      "用 --port 指定別的埠。")
 
 
+def _lower_priority() -> bool:
+    """把自己降到「低於標準」優先權。
+
+    渲染是吃滿 CPU 的工作（大檔一格要兩三秒，背景還會預抓）。優先權照預設的話，
+    預抓期間 Cocos Studio、瀏覽器、編輯器都會跟著頓；降一級之後別的程式要 CPU
+    時一律先給它們，這裡只撿剩下的，自己看的那一格在電腦閒著時一樣快。
+    """
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.windll.kernel32
+            # 型別一定要宣告：不宣告的話 ctypes 把 GetCurrentProcess 的 -1（偽 handle）
+            # 當 32 位元整數傳，64 位元 Windows 上就變成無效 handle（實測錯誤碼 6），靜靜失敗。
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel32.SetPriorityClass.restype = wintypes.BOOL
+            below_normal = 0x00004000
+            return bool(kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal))
+        os.nice(5)
+        return True
+    except Exception:            # 拿不到權限就算了，照常服務
+        return False
+
+
 def serve(root: str = ".", port: int = 8770, open_browser: bool = True,
           project_root: str | None = None) -> None:
     Handler.state = ViewerState(root, project_root)
     _WANTED[0] = port
     server, port = _bind(port)
     url = f"http://127.0.0.1:{port}/"
+    gentle = _lower_priority()
 
     print(f"csdview 網頁檢視器已啟動：{url}")
     if port != _WANTED[0]:
         print(f"（{_WANTED[0]} 已經有人在用了，改用 {port}）")
     print(f"瀏覽目錄：{Handler.state.root}")
+    if gentle:
+        print("渲染以較低優先權執行：其他程式要用 CPU 時會先讓給它們。")
     print("按 Ctrl+C 結束。")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

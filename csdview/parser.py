@@ -206,6 +206,11 @@ def _parse_node(el: ET.Element) -> Node:
         if not n.file:
             n.file = _file_ref(el.find("FileData"))
 
+    # ---- 設定元素原樣留著（屬性面板用）
+    for sub in el:
+        if sub.tag != "Children" and sub.tag not in n.elements:
+            n.elements[sub.tag] = dict(sub.attrib)
+
     # ---- 子節點
     children = el.find("Children")
     if children is not None:

@@ -73,14 +73,25 @@ def node_matrix(x: float, y: float, scale_x: float, scale_y: float,
 # ---------------------------------------------------------------- 畫布
 
 class Canvas:
-    """預乘 alpha 的 float32 畫布，加法混色才不會出錯。"""
+    """預乘 alpha 的 float32 畫布，加法混色才不會出錯。
 
-    def __init__(self, width: int, height: int):
+    left/top 是這塊畫布左上角在整張畫布上的像素位置。主畫布是 (0, 0)；
+    裁切用的暫存層只開裁切框那麼大，座標照樣用整張畫布的，由這裡換算。
+    原本暫存層一律開整張畫布大小，4003x3146 的檔光一層就多 200 MB，
+    巢狀裁切再一層一層疊上去。
+    """
+
+    def __init__(self, width: int, height: int, left: int = 0, top: int = 0):
         self.width = max(1, width)
         self.height = max(1, height)
+        self.left = left
+        self.top = top
         self.buf = np.zeros((self.height, self.width, 4), dtype=np.float32)
 
     def composite(self, patch: np.ndarray, x: int, y: int, additive: bool = False) -> None:
+        """把 patch 疊到整張畫布座標 (x, y)。"""
+        x -= self.left
+        y -= self.top
         ph, pw = patch.shape[:2]
         x0, y0 = max(0, x), max(0, y)
         x1, y1 = min(self.width, x + pw), min(self.height, y + ph)
@@ -178,6 +189,12 @@ class NodeReport:
     # 但通常代表文案太長塞不進設計好的框——移植時會在引擎端同樣爆版。
     overflow: tuple[float, float] | None = None
     children: list["NodeReport"] = field(default_factory=list)
+    # 以下三個只給網頁的屬性面板用，不進 to_dict（CLI 的 JSON 輸出維持原樣）：
+    # 對應的模型節點、它定義在哪份 .csd（巢狀的會是被引用的那份），
+    # 以及這一格被動畫覆蓋之後的實際值。
+    node: "Node | None" = field(default=None, repr=False)
+    owner: "Document | None" = field(default=None, repr=False)
+    live: "dict | None" = field(default=None, repr=False)
 
     def to_dict(self, with_children: bool = True,
                 max_depth: "int | None" = None) -> dict:
@@ -255,6 +272,10 @@ class RenderOptions:
 
 
 _PARTICLE_COLOR = (255, 0, 255)
+
+# 繼承 ui::Layout 的容器：底圖沒開九宮格時以原尺寸置中，不拉伸
+_LAYOUT_TYPES = frozenset({"PanelObjectData", "ScrollViewObjectData",
+                           "ListViewObjectData", "PageViewObjectData"})
 
 
 class Renderer:
@@ -511,6 +532,12 @@ class Renderer:
             depth=depth, visible=effective_visible, alpha=node_alpha,
             size=(content_w, content_h), position=(x, y), rect=rect, quad=quad,
             source=content.source, text=node.text,
+            node=node, owner=doc,
+            live={"frame": frame, "scale": (scale_x, scale_y),
+                  "rotation": (rot_x, rot_y), "anchor": (anchor_x, anchor_y),
+                  "alpha": alpha, "color": color, "visible": visible,
+                  "file": file_ref, "blend": blend, "animated": track is not None,
+                  "inner": track.inner_action if track is not None else None},
         )
         if node.ctype in ("TextObjectData", "TextFieldObjectData") and node.custom_size:
             _ox, _oy, draw_w, draw_h = content.draw_box()
@@ -542,7 +569,23 @@ class Renderer:
             child_bounds = clip_bounds
 
         if clip_active:
-            target = Canvas(canvas.width, canvas.height)
+            # 暫存層只開「裁切框 ∩ 上層畫布」那麼大：框外的像素反正會被遮罩成 0，
+            # 疊回去時也不會改變任何東西。實測兩個專案含裁切的檔 850 次渲染，
+            # 848 張逐位元相同；另 2 張各有 8 個像素差 1/255——貼圖切片的起點變了，
+            # Pillow 仿射取樣的浮點捨入跟著變，肉眼與 compare 都分不出來。
+            # 多留 1 像素：多邊形填色會蓋到頂點那一格。
+            xs = [round(px) for px, _py in quad]
+            ys = [round(py) for _px, py in quad]
+            left = max(canvas.left, min(xs) - 1)
+            top = max(canvas.top, min(ys) - 1)
+            right = min(canvas.left + canvas.width, max(xs) + 2)
+            bottom = min(canvas.top + canvas.height, max(ys) + 2)
+            if left < right and top < bottom:
+                target = Canvas(right - left, bottom - top, left, top)
+            else:
+                # 裁切框完全在畫面外：子節點照樣走（要產生報告），只是不畫
+                target = None
+                clip_active = False
 
         for child in node.children:
             child_report = self._walk(doc, child, state, frame, world, node_alpha, node_color,
@@ -582,7 +625,7 @@ class Renderer:
 
         if clip_active and target is not None and canvas is not None:
             self._apply_clip(target, quad)
-            canvas.composite(target.buf, 0, 0)
+            canvas.composite(target.buf, target.left, target.top)
 
         return report
 
@@ -610,10 +653,10 @@ class Renderer:
 
         corners = [apply_point(forward, 0, 0), apply_point(forward, pw, 0),
                    apply_point(forward, pw, ph), apply_point(forward, 0, ph)]
-        x0 = max(0, int(math.floor(min(p[0] for p in corners))))
-        y0 = max(0, int(math.floor(min(p[1] for p in corners))))
-        x1 = min(canvas.width, int(math.ceil(max(p[0] for p in corners))) + 1)
-        y1 = min(canvas.height, int(math.ceil(max(p[1] for p in corners))) + 1)
+        x0 = max(canvas.left, int(math.floor(min(p[0] for p in corners))))
+        y0 = max(canvas.top, int(math.floor(min(p[1] for p in corners))))
+        x1 = min(canvas.left + canvas.width, int(math.ceil(max(p[0] for p in corners))) + 1)
+        y1 = min(canvas.top + canvas.height, int(math.ceil(max(p[1] for p in corners))) + 1)
         if x0 >= x1 or y0 >= y1:
             return
 
@@ -649,7 +692,9 @@ class Renderer:
 
     def _apply_clip(self, layer: Canvas, quad: list[tuple[float, float]]) -> None:
         mask = Image.new("L", (layer.width, layer.height), 0)
-        ImageDraw.Draw(mask).polygon([(round(px), round(py)) for px, py in quad], fill=255)
+        # 先取整再平移，跟整張畫布上畫同一個多邊形落在完全相同的像素
+        ImageDraw.Draw(mask).polygon([(round(px) - layer.left, round(py) - layer.top)
+                                      for px, py in quad], fill=255)
         layer.buf *= (np.asarray(mask, dtype=np.float32) / 255.0)[..., None]
 
     # ------------------------------------------------------------ 內容建構
@@ -712,7 +757,20 @@ class Renderer:
             return Content(width=node.width or img_w, height=node.height or img_h,
                            source=source.path)
 
-        # ImageView／Panel／ListView 等控件以節點 Size 為準，貼圖要拉滿；
+        # Panel／ScrollView／ListView／PageView（都是 ui::Layout）的底圖沒開九宮格時
+        # 不會被拉伸：cocos2d-x 的 Layout::setBackGroundImage 只在九宮格開著時
+        # setPreferredSize(contentSize)，否則就是原尺寸的 sprite 擺在框的正中央。
+        # 先前一律拉滿，coinMonopoly/MainView 的頂條（960x88 的圖、1200x150 的 Panel）
+        # 就被拉成 1.25 x 1.7 倍、花邊變形，跟引擎畫出來的對不上。
+        if (node.ctype in _LAYOUT_TYPES and node.width > 0 and node.height > 0
+                and (img_w, img_h) != (node.width, node.height)):
+            return Content(image, node.width, node.height, source=source.path,
+                           offset_x=(node.width - img_w) / 2,
+                           offset_y=(node.height - img_h) / 2,
+                           image_w=img_w, image_h=img_h)
+
+        # ImageView 等控件以節點 Size 為準，貼圖要拉滿（ImageView 關掉
+        # ignoreContentAdaptWithSize 時會縮放貼圖填滿 Size）；
         # Sprite 則維持貼圖原尺寸（縮放走 ScaleX/Y）。
         if node.ctype != "SpriteObjectData" and node.width > 0 and node.height > 0:
             return Content(image, node.width, node.height, source=source.path)
